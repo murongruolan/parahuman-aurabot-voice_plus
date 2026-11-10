@@ -1,0 +1,8 @@
+{
+  "id": "breeze-settings",
+  "name": "BreezeBlue 语音设置",
+  "version": "1.0.0",
+  "api": 1,
+  "description": "为配套用户 voice 模块提供嵌入原语音页的配置与试听面板，不改宿主源码。",
+  "license": "MIT"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "aurabot-breezeblue-voice",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "test": "node scripts/tasks.mjs test",
+    "test:upstream": "node scripts/tasks.mjs upstream-test",
+    "test:live": "node scripts/tasks.mjs live",
+    "package": "node scripts/tasks.mjs package"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.56.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

@@ -1,0 +1,17 @@
+node_modules/
+artifacts/
+.private/
+.env
+.env.*
+!.env.example
+upstream/
+.aurabot-cache/
+**/.aurabot-cache/
+dist/
+research/downloads/
+.claude/
+*.local.json
+*.wav
+*.mp3
+*.zip
+*.log

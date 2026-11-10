@@ -1,0 +1,10 @@
+{
+  "id": "voice",
+  "name": "语音 · BreezeBlue 扩展",
+  "version": "1.0.0",
+  "api": 1,
+  "description": "从 Aurabot 1.2.0 内置语音模块复制的用户扩展，新增 BreezeBlue 远程 TTS，保留原引擎、RVC 与 ASR。",
+  "license": "MIT",
+  "source": "https://github.com/aureth-labs/dsh-aurabot-qq",
+  "baseCommit": "1057a861e4e96aa2fe050000d238280a7901b9dc"
+}
