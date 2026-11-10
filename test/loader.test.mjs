@@ -91,7 +91,7 @@ test('companion configuration module is eligible for actual host UI and keys sta
   reset()
   const s = mods.status().find(m => m.id === 'breeze-settings')
   const hasUi = m => m.running === 'user' && !m.builtin && !['voice', 'song'].includes(m.id) && ((m.settings || []).length || m.panel)
-  assert.equal(mods.running('breeze-settings'), 'user'); assert.ok(hasUi(s)); assert.equal(s.tab, 'voice')
+  assert.equal(mods.running('breeze-settings'), 'user'); assert.ok(hasUi(s)); assert.equal(s.tab, '')
   assert.equal(publicConfig(cfg).ext['breeze-settings'].apiKey, '')
 })
 test('omitting/disabling the companion never auto-enables paid generation', async () => {
@@ -273,6 +273,44 @@ test('in-flight Breeze work is cancelled on module stop without invoking fallbac
   assert.equal(oldRequests.length, 0); assert.equal(remoteRequests.length, 1)
   reset(); await mods.reload('voice')
 })
+test('independent console stays available across enhanced, official and off; settings retained', async () => {
+  reset()
+  cfg.ext['breeze-settings'].customLegacy = 'keep-me'
+  const key = cfg.ext['breeze-settings'].apiKey
+  for (const mode of ['official', 'off', 'enhanced', 'off', 'official', 'enhanced']) {
+    const state = await route('/ext/breeze-settings/console/status')
+    const r = await route('/ext/breeze-settings/console/mode', { mode, revision: state.revision })
+    assert.equal(r.ok, true, r.message); assert.equal(r.actualMode, mode); assert.equal(r.requestedMode, mode)
+    assert.equal(mods.running('voice'), mode === 'off' ? null : mode === 'official' ? 'builtin' : 'user')
+    assert.equal(mods.running('breeze-settings'), 'user')
+    assert.equal(cfg.ext['breeze-settings'].apiKey, key); assert.equal(cfg.ext['breeze-settings'].customLegacy, 'keep-me')
+    assert.equal(cfg.voice.enabled, mode !== 'off')
+  }
+  assert.equal(remoteRequests.length, 0)
+})
+test('console status/save mask keys, keep unrelated config, and reject stale writes', async () => {
+  reset(); cfg.ext.unrelated = { keep: 1 }
+  const state = await route('/ext/breeze-settings/console/status')
+  assert.equal(state.settings.apiKey, ''); assert.equal(state.settings.apiKeySet, true)
+  assert.equal(state.enhancedAvailable, true)
+  const r = await route('/ext/breeze-settings/console/save', { revision: state.revision, settings: { speed: 0.9, apiKey: '' }, original: { engine: 'http' } })
+  assert.equal(r.ok, true, r.message); assert.equal(cfg.ext['breeze-settings'].speed, 0.9)
+  assert.equal(cfg.ext['breeze-settings'].apiKey, 'brz_fixture_secret'); assert.deepEqual(cfg.ext.unrelated, { keep: 1 })
+  assert.equal((await route('/ext/breeze-settings/console/save', { revision: state.revision, settings: { speed: 1.1 } })).ok, false)
+  assert.equal(cfg.ext['breeze-settings'].speed, 0.9)
+})
+test('console actual preview honors off state and cannot bypass stored revision', async () => {
+  reset()
+  let state = await route('/ext/breeze-settings/console/status')
+  const preview = await route('/ext/breeze-settings/console/test', { text: '控制台试听', revision: state.revision })
+  assert.equal(preview.ok, true, preview.message); assert.equal(preview.engine, 'breezeblue')
+  assert.equal((await route('/ext/breeze-settings/console/test', { text: '不允许', revision: 'stale' })).ok, false)
+  state = await route('/ext/breeze-settings/console/mode', { mode: 'off', revision: state.revision })
+  assert.equal((await route('/ext/breeze-settings/console/test', { text: '关闭', revision: state.revision })).ok, false)
+  assert.equal(remoteRequests.length, 1)
+  await route('/ext/breeze-settings/console/mode', { mode: 'enhanced', revision: state.revision })
+})
+
 test('broken user entry falls back to built-in, restores from unchanged distributable', async () => {
   const entry = join(root, 'modules', 'voice', 'index.mjs')
   const original = readFileSync(entry, 'utf8')

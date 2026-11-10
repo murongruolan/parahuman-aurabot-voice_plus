@@ -1,5 +1,7 @@
 # BreezeBlue 用户语音模块开发记录
 
+> 2026-11-11：用户要求因额度不足暂停1.1.0实现，保存当前WIP。**请从 `docs/HANDOVER.md` 接续**，分支 `handoff/voice-plus-1.1-wip`。1.0.0基线 `889d522` 已推送并由用户在目标QQ验证；1.1.0后端测试116项通过发生在新面板重写之前，新面板尚未验证。以下为早期工作记录，不是当前WIP完成证明。
+
 目标：基于 dsh-aurabot-qq 内置 voice 模块复制扩展，添加 BreezeBlue 远程 TTS；不修改缓存中的上游源码；交付可安装包、中文使用说明、回归与真实 API 验证。
 
 开发根目录：`D:\.claude_work\aurabot-breezeblue-voice`。
