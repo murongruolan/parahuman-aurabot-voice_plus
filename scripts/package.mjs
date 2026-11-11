@@ -37,12 +37,11 @@ for (const [id, files] of Object.entries(moduleFiles)) {
   }
   manifest.modules.push(mod)
 }
-for (const path of ['使用说明.md', '测试报告.md', 'scripts/install.mjs']) inspectText(readFileSync(join(root, path)), path)
+for (const path of ['scripts/install.mjs']) inspectText(readFileSync(join(root, path)), path)
 for (const [id, files] of Object.entries(moduleFiles)) {
   mkdirSync(join(release, id), { recursive: true })
   for (const file of files) copyFileSync(join(root, 'modules', id, file), join(release, id, file))
 }
-for (const file of ['使用说明.md', '测试报告.md']) copyFileSync(join(root, file), join(release, file))
 copyFileSync(join(root, 'scripts/install.mjs'), join(release, 'install.mjs'))
 writeFileSync(join(release, 'MODULE-FILES.sha256.json'), JSON.stringify(manifest, null, 2))
 mkdirSync(join(release, '试听样本'))
@@ -53,7 +52,7 @@ for (const format of ['wav', 'mp3']) {
   const sampleName = format === 'wav' ? '玉玲珑-早上好.wav' : '玉玲珑-连接成功.mp3'
   copyFileSync(run.file, join(release, '试听样本', sampleName))
 }
-writeFileSync(join(release, '先读我.txt'), '在目标 DSH 机器上安装，不在开发电脑安装。\n\n1. 先读《使用说明.md》。\n2. 全新安装：把 voice 和 breeze-settings 两个文件夹放到目标 Aurabot 用户 modules 目录；已有同名目录不要直接覆盖。\n3. 从 1.0.0 升级：先在「已安装」切回官方语音，把旧 voice / breeze-settings 备份并移出 modules，再放入本包两个目录。配置在 DSH 配置里，不会被模块文件替换清除。\n4. 打开独立导航页「增强语音」；三态选择「增强语音」，在「远程 Breeze」填写 Key 与 Voice ID 并保存。\n5. 本次音色：voc_xrszxupbkdfa（玉玲珑）。Key 不在发行包里，需要自行填写。\n6. 本包未改整个 DSH 插件；遇到问题可切回「官方语音」，旧 1.0.0 包仍保留。\n\ninstall.mjs 是可选工具，不带 --install 只检查；它默认拒绝覆盖已有模块，升级请按上面第 3 步手动备份。\n目标机器 QQ 通路需最后验证；详见《测试报告.md》。\n')
+writeFileSync(join(release, '先读我.txt'), '在目标 DSH 机器上安装，不在开发电脑安装。\n\n1. 全新安装：把 voice 和 breeze-settings 两个文件夹放到目标 Aurabot 用户 modules 目录；已有同名目录不要直接覆盖。\n2. 从旧版本升级：先在「增强语音」页切回官方语音，把旧 voice / breeze-settings 备份并移出 modules，再放入本包两个目录。配置在 DSH 配置里，不会被模块文件替换清除。\n3. 打开独立导航页「增强语音」；三态选择「增强语音」，在「远程 Breeze」或「情绪引擎」里配置并保存。\n4. 本次音色：voc_xrszxupbkdfa（玉玲珑）。Key 不在发行包里，需要自行填写。\n5. 本包未改整个 DSH 插件；遇到问题可切回「官方语音」，旧版本发行包仍保留。\n\ninstall.mjs 是可选工具，不带 --install 只检查；它默认拒绝覆盖已有模块，升级请按上面第 2 步手动备份。\n目标机器 QQ 通路需最后验证；详细说明与测试证据见私有仓库 README 与仓库外文档备份。\n')
 const releaseHashes = []
 function inspectDirectory(directory, prefix = '') {
   for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {

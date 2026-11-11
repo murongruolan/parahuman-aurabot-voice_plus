@@ -31,8 +31,6 @@ if (task === 'upstream-test') {
   await runNode(['--test', 'test/**/*.test.js'], { cwd: join(root, 'upstream'), log: 'upstream-test.log' })
 } else if (task === 'test') {
   await runNode(['--test', 'test/*.test.mjs'], { log: 'module-test.log' })
-} else if (task === 'docs') {
-  await import('./fetch-docs.mjs')
 } else if (task === 'clone') {
   await import('./clone-builtin.mjs')
 } else if (task === 'live') {
