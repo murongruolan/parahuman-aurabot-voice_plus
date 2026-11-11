@@ -18,9 +18,9 @@ export const EMOTIONS = {
   lazy: { zh: '慵懒', instr: '语气慵懒、慢悠悠，有点提不起劲' },
 }
 export const AROUSALS = {
-  L: { zh: '低唤醒', instr: '整体能量低：气声多一些、音量略小、语速放慢、停顿拉长', speed: 0.9 },
-  M: { zh: '中唤醒', instr: '用自然说话的能量与语速', speed: 1 },
-  H: { zh: '高唤醒', instr: '能量拉满：语速加快、音调更高、更用力', speed: 1.15 },
+  L: { zh: '轻', instr: '情绪浓度偏低：轻微、收敛、点到为止', guidance: 2 },
+  M: { zh: '标准', instr: '自然的情绪浓度', guidance: 4 },
+  H: { zh: '强烈', instr: '情绪浓度拉满：明显、外放、强烈', guidance: 6 },
 }
 export const STYLES = {
   whisper: { zh: '气声/耳语', instr: '用气声、耳语般的质感' },
@@ -39,7 +39,7 @@ export const BREEZE_NATIVE_TAGS = {
   whisper: '[耳语]', cry: '[哭声]', laugh: '[笑]', tremble: '[呜咽]', sigh: '[叹气]', growl: '[闷哼]', drawl: '', coquettish: '',
 }
 const EMOTION_ALIAS = Object.fromEntries(Object.entries(EMOTIONS).flatMap(([key, v]) => [[key, key], [v.zh, key]]))
-const AROUSAL_ALIAS = { L: 'L', M: 'M', H: 'H', l: 'L', m: 'M', h: 'H', 低: 'L', 中: 'M', 高: 'H', 低唤醒: 'L', 中唤醒: 'M', 高唤醒: 'H' }
+const AROUSAL_ALIAS = { L: 'L', M: 'M', H: 'H', l: 'L', m: 'M', h: 'H', 低: 'L', 中: 'M', 高: 'H', 轻: 'L', 标准: 'M', 强烈: 'H', 低唤醒: 'L', 中唤醒: 'M', 高唤醒: 'H' }
 const STYLE_ALIAS = Object.fromEntries(Object.entries(STYLES).flatMap(([key, v]) => [[key, key], [v.zh, key], [v.zh.split('/')[0], key], [v.zh.split('/')[1], key]].filter(x => x[0] && x[1])))
 
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -69,18 +69,18 @@ export function parseVoiceTags(raw) {
   return { emotion, arousal, styles: [...new Set(styles)], text: cleaned, flagged }
 }
 
-/** 有情绪标记时，把情绪/唤醒/风格换算成 Breeze 表演指令与语速。 */
+/** 有情绪标记时按「情绪行指令 × 唤醒度 guidance」解析请求参数（矩阵实测铁律）：
+ *  指令留空 = 纯文本模式，guidance 强制 1.0（API 对空指令本就钳到 1，boost 生效最稳）；
+ *  有指令时：情绪行 guidance "跟随" → 取唤醒度档位值，显式数字则覆盖该情绪。 */
 export function applyEmotion(config, tags) {
   if (!tags?.flagged) return config
-  const emo = EMOTIONS[tags.emotion] || EMOTIONS.calm
+  const table = (config.emotion || {}).emotions || {}
+  const row = table[tags.emotion] || {}
+  const instructions = String(row.instructions || '').trim()
   const arousal = AROUSALS[tags.arousal] || AROUSALS.M
-  const parts = [emo.instr, arousal.instr, ...(tags.styles || []).map(s => (STYLES[s] || {}).instr).filter(Boolean)]
-  const base = String(config.instructions || '').trim()
-  const instructions = [base, ...parts].filter(Boolean).join('；')
-  const speed = Math.min(2, Math.max(0.5, (Number(config.speed) || 1) * arousal.speed))
-  // 动态表演指令需要更强的引导权重才听得出（官方示例 guidance 4.0）。
-  const guidanceScale = Math.max(Number(config.guidanceScale) || 1, 2)
-  return { ...config, instructions, speed, guidanceScale }
+  const picked = !instructions ? 1 : (row.guidance && row.guidance !== 'follow' ? Number(row.guidance) : arousal.guidance)
+  const guidanceScale = Math.min(10, Math.max(1, Number.isFinite(picked) ? picked : 1))
+  return { ...config, instructions, guidanceScale }
 }
 
 export class EmotionError extends Error {

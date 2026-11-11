@@ -1,13 +1,15 @@
 // Settings live in cfg.ext['breeze-settings']; core cfg.voice is untouched.
 const FORMATS = ['wav', 'wav_24000', 'mp3', 'mp3_24000_64', 'mp3_24000_96', 'mp3_24000_128', 'mp3_24000_160']
 export const DEFAULTS = Object.freeze({
-  provider: 'builtin', apiKey: '', voiceId: '', modelId: 'breeze-tts-2',
-  languageCode: '', instructions: '', guidanceScale: 1, speed: 1, volume: 1,
-  speakerBoost: false, outputFormat: 'wav', timeoutSeconds: 300, fallback: true,
-  retryCount: 2, retryDelaySeconds: 1,
+  provider: 'builtin', apiKey: '', voiceId: '', modelId: 'breeze-tts-2-multilingual',
+  languageCode: 'zh', instructions: '', guidanceScale: 1,
+  speakerBoost: true, outputFormat: 'wav', timeoutSeconds: 300, fallback: true,
+  retryCount: 2, retryDelaySeconds: 1, promptTags: true,
   emotion: Object.freeze({
     endpoints: [], templates: [],
     routing: Object.freeze({ calm: 'breezeblue', playful: 'breezeblue', down: 'breezeblue', angry: 'breezeblue', excited: 'breezeblue', proud: 'breezeblue', whiny: 'breezeblue', lazy: 'breezeblue' }),
+    emotions: Object.freeze(Object.fromEntries(['calm', 'playful', 'down', 'angry', 'excited', 'proud', 'whiny', 'lazy'].map(k => [k, Object.freeze({ instructions: '', guidance: 'follow' })]))),
+    arousal: Object.freeze({ L: 2, M: 4, H: 6 }),
   }),
 })
 export const SETTINGS = [

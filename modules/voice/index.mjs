@@ -17,7 +17,7 @@ const { fileOf } = __lib('local/local.js')
 export default {
   id: 'voice',
   name: '语音 · BreezeBlue 扩展',
-  version: '1.3.0',
+  version: '1.4.0',
   api: 1,
   description: '基于内置语音模块的用户副本：新增 BreezeBlue，保留原引擎、本地接口、RVC 与 ASR。',
   // Host 1.2.0 hides UI on same-name replacements. The companion breeze-settings module owns it.
@@ -32,9 +32,15 @@ export default {
     const access = (req, method) => panelAccessError(req, method, api.config().security)
     // Chat-path fallbacks are silent by design; remember the last one so the console can show it.
     let lastFallback = null
-    // 提示词补充规则（宿主官方机制，不改宿主源码）：标点分句比空格更贴合语音引擎的韵律。
-    // 模型偶尔不遵守是提示词方案的已知边界；合成侧自动补标点已评估，按用户决定暂不启用。
-    api.rule(() => ['- 写 <voice>…</voice> 里的语音内容时，句子之间用中文标点（，。！？）分隔，不要只靠空格分开几句话。'])
+    // 提示词补充规则（宿主官方机制，不改宿主源码）：标点 + 可开关的情绪标记教学。
+    api.rule((kind, cfg) => {
+      const lines = ['- 写 <voice>…</voice> 里的语音内容时，句子之间用中文标点（，。！？）分隔，不要只靠空格分开几句话。']
+      if (((cfg || {}).ext || {})['breeze-settings']?.promptTags !== false) {
+        lines.push('- 语音可带情绪标记：<voice> 开头写 [情绪:强度]。情绪：calm 平静 / playful 俏皮 / down 失落 / angry 生气 / excited 兴奋 / proud 得意 / whiny 娇嗔 / lazy 慵懒；强度：L 轻 / M 标准 / H 强烈。例：<voice>[excited:H]今天运气真好！</voice>；没有情绪就不写。')
+        lines.push('- 需要副语言时在句中或句尾加 [whisper 气声] / [cry 哭腔] / [laugh 笑腔] / [tremble 颤音] / [drawl 拖腔] / [growl 狠厉] / [coquettish 撒娇] / [sigh 叹气]，也可以直接用 Breeze 行内标签如 [笑] [叹气] [耳语] [哭声]。')
+      }
+      return lines
+    })
 
     async function breezeSpeech(text, config) {
       const result = await breeze.synthesize(text, config, api.dataDir('breezeblue-cache'))
@@ -52,18 +58,31 @@ export default {
       const timer = setTimeout(ok, ms)
       lifetime.signal.addEventListener('abort', () => { clearTimeout(timer); fail(new Error('语音模块已停用')) }, { once: true })
     })
-    // Retry only connection-level failures (no HTTP response was received). HTTP status
-    // errors and timeouts are never retried: the platform may have already billed.
+    // 402（额度不足）连续 3 次 → 熔断 Breeze 腿 10 分钟自动恢复，避免空转。
+    let breakerUntil = 0, count402 = 0
+    // Retry: connection-level failures (no HTTP response) and 429 (rejected, never billed)
+    // with exponential backoff. Other HTTP statuses and timeouts are never retried.
     async function speakBreeze(text, config) {
+      if (Date.now() < breakerUntil) throw new Error(`Breeze 额度熔断中（连续 402×3），约 ${Math.ceil((breakerUntil - Date.now()) / 60000)} 分钟后自动恢复`)
       const max = typeof config.retryCount === 'number' && Number.isFinite(config.retryCount) ? Math.floor(config.retryCount) : DEFAULTS.retryCount
       const attempts = Math.max(0, Math.min(max, 5))
       const secs = typeof config.retryDelaySeconds === 'number' && Number.isFinite(config.retryDelaySeconds) ? config.retryDelaySeconds : DEFAULTS.retryDelaySeconds
-      const delay = Math.max(0, Math.min(secs, 60)) * 1000
+      const baseDelay = Math.max(0, Math.min(secs, 60)) * 1000
       for (let attempt = 0; ; attempt++) {
-        try { return await breezeSpeech(text, config) } catch (error) {
-          if (error?.code !== 'NETWORK_ERROR' || attempt >= attempts || lifetime.signal.aborted) throw error
-          api.log.warn(`BreezeBlue 连接失败（${safeMessage(error)}），${delay ? Math.round(delay) + ' 毫秒后重试' : '立即重试'} ${attempt + 1}/${attempts}`)
-          await pause(delay)
+        try {
+          const result = await breezeSpeech(text, config)
+          count402 = 0
+          return result
+        } catch (error) {
+          if (error?.status === 402) {
+            count402++
+            if (count402 >= 3) { breakerUntil = Date.now() + 600000; api.log.warn('Breeze 连续 402×3：额度不足，Breeze 腿熔断 10 分钟后自动恢复') }
+          } else if (error?.status !== 429) count402 = 0
+          const retryable = !lifetime.signal.aborted && attempt < attempts && (error?.code === 'NETWORK_ERROR' || error?.status === 429)
+          if (!retryable) throw error
+          const wait = baseDelay * Math.pow(2, attempt)
+          api.log.warn(`BreezeBlue ${error?.status === 429 ? '限流(429)' : '连接失败'}（${safeMessage(error)}），${Math.round(wait)} 毫秒后重试 ${attempt + 1}/${attempts}`)
+          await pause(wait)
         }
       }
     }
@@ -211,7 +230,7 @@ export default {
       return { ok: true, provider: config.provider, configured: valid,
         keySet: Boolean(config.apiKey), voiceId: config.voiceId || '',
         localTtsActive: Boolean(local.active('tts')), voiceEnabled: api.config().voice?.enabled !== false,
-        lastFallback,
+        lastFallback, breakerUntil,
         message }
     })
     api.route('/ext/breeze-settings/breeze/voices', async req => {

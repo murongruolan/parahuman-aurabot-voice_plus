@@ -9,9 +9,9 @@ const DEFAULT_ROUTING = { calm: 'breezeblue', playful: 'breezeblue', down: 'bree
 const snapshot = (over = {}) => ({
   ok: true, revision: 'rev-1', requestedMode: 'enhanced', actualMode: 'enhanced', running: 'user',
   fallback: false, safeMode: false, moduleError: '', enhancedAvailable: true,
-  settings: { provider: 'breezeblue', apiKey: '', apiKeySet: true, voiceId: 'voc_saved', speed: 1, volume: 1,
-    modelId: 'm1', languageCode: '', instructions: '', guidanceScale: 1, outputFormat: 'wav', timeoutSeconds: 60,
-    speakerBoost: false, fallback: true, retryCount: 2, retryDelaySeconds: 1,
+  settings: { provider: 'breezeblue', apiKey: '', apiKeySet: true, voiceId: 'voc_saved', guidanceScale: 1,
+    modelId: 'm1', languageCode: 'zh', instructions: '', outputFormat: 'wav', timeoutSeconds: 60,
+    speakerBoost: true, fallback: true, retryCount: 2, retryDelaySeconds: 1, promptTags: true,
     emotion: { routing: { ...DEFAULT_ROUTING }, endpoints: [], templates: [] } },
   original: { engine: 'auto', voice: 'zh-CN-XiaoyiNeural', rate: '+0%', pitch: '+0Hz',
     http: { headers: '', headersSet: false, method: 'GET', urlTemplate: '', body: '' },
@@ -117,7 +117,7 @@ test('enhanced mode disabled without user voice module; off state blocks preview
 })
 
 test('local edits stay local, blank key is not dirty, save sends revision and clears draft', async () => {
-  const saved = snapshot({ revision: 'rev-2', settings: { ...snapshot().settings, speed: 0.8 } })
+  const saved = snapshot({ revision: 'rev-2', settings: { ...snapshot().settings, timeoutSeconds: 120 } })
   const calls = []
   const m = mount(async (path, body) => {
     calls.push({ path, body })
@@ -128,14 +128,14 @@ test('local edits stay local, blank key is not dirty, save sends revision and cl
   m.render(); await flush(); m.render()
   field(m, 'Breeze API Key').props.onChange({ target: { value: '' } })
   assert.equal(byText(m, 'button', '保存配置').props.disabled, true)
-  field(m, '语速倍率').props.onChange({ target: { value: '0.8' } })
+  field(m, '请求超时（秒）').props.onChange({ target: { value: '120' } })
   assert.match(m.find(x => x.props['aria-live'] === 'polite').children[0], /未保存/)
   assert.equal(byText(m, 'button', '保存配置').props.disabled, false)
   await byText(m, 'button', '保存配置').props.onClick()
   await flush()
   const save = calls.find(c => c.path === '/console/save')
   assert.equal(save.body.revision, 'rev-1')
-  assert.deepEqual(save.body.settings, { speed: 0.8 })
+  assert.deepEqual(save.body.settings, { timeoutSeconds: 120 })
   assert.deepEqual(save.body.original, {})
   assert.equal(m.toasts.at(-1), '语音设置已保存')
   assert.equal(byText(m, 'button', '保存配置').props.disabled, true)
@@ -247,13 +247,13 @@ test('failed save surfaces the conflict and keeps the local draft', async () => 
     return { ok: true }
   })
   m.render(); await flush(); m.render()
-  field(m, '语速倍率').props.onChange({ target: { value: '0.7' } })
+  field(m, '请求超时（秒）').props.onChange({ target: { value: '90' } })
   await byText(m, 'button', '保存配置').props.onClick()
   await flush(); m.render()
   assert.match(m.find(x => x.props.role === 'alert').children[0], /配置已在其他页面变更/)
   assert.equal(byText(m, 'button', '保存配置').props.disabled, false)
   assert.match(m.find(x => x.props['aria-live'] === 'polite').children[0], /未保存/)
-  assert.equal(field(m, '语速倍率').props.value, 0.7)
+  assert.equal(field(m, '请求超时（秒）').props.value, 90)
   m.restore()
 })
 
@@ -308,11 +308,30 @@ test('emotion templates save current routing and apply it back', async () => {
   m.render(); await flush(); m.render()
   await byText(m, 'button', '情绪引擎').props.onClick()
   field(m, '情绪路由 · 生气').props.onChange({ target: { value: 'builtin' } })
-  field(m, '模板名称').props.onChange({ target: { value: '生气全内置' } })
-  byText(m, 'button', '保存为模板').props.onClick()
+  field(m, '预设名称').props.onChange({ target: { value: '生气全内置' } })
+  byText(m, 'button', '保存为预设').props.onClick()
   field(m, '情绪路由 · 生气').props.onChange({ target: { value: 'breezeblue' } })
   byText(m, 'button', '应用').props.onClick()
   assert.equal(field(m, '情绪路由 · 生气').props.value, 'builtin')
+  m.restore()
+})
+test('emotion presets bind the current voice id and apply swaps it back', async () => {
+  const calls = []
+  const m = mount(async (path, body) => {
+    calls.push({ path, body })
+    if (path === '/console/status') return snapshot()
+    if (path === '/console/save') return snapshot({ revision: 'rev-2' })
+    return { ok: true }
+  })
+  m.render(); await flush(); m.render()
+  await byText(m, 'button', '情绪引擎').props.onClick()
+  field(m, '预设名称').props.onChange({ target: { value: '玉玲珑' } })
+  byText(m, 'button', '保存为预设').props.onClick()
+  await byText(m, 'button', '保存配置').props.onClick()
+  await flush()
+  const body = calls.find(c => c.path === '/console/save').body.settings
+  assert.equal(body.emotion.templates[0].name, '玉玲珑')
+  assert.equal(body.emotion.templates[0].voiceId, 'voc_saved')
   m.restore()
 })
 

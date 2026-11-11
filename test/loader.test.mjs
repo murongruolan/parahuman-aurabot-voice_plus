@@ -100,6 +100,15 @@ test('voice module contributes an official prompt rule asking for punctuation in
   assert.ok(rule); assert.ok(rule.includes('<voice>')); assert.ok(rule.includes('空格'))
   assert.ok(mods.rules('social').some(x => x.includes('标点')))
 })
+test('promptTags switch gates the emotion-tag teaching lines only', () => {
+  reset()
+  assert.ok(mods.rules('private').some(x => x.includes('情绪标记')))
+  assert.ok(mods.rules('private').some(x => x.includes('行内标签')))
+  cfg.ext['breeze-settings'].promptTags = false
+  assert.ok(!mods.rules('private').some(x => x.includes('情绪标记')))
+  assert.ok(!mods.rules('social').some(x => x.includes('行内标签')))
+  assert.ok(mods.rules('private').some(x => x.includes('中文标点')), 'punctuation line stays')
+})
 test('omitting/disabling the companion never auto-enables paid generation', async () => {
   reset(); cfg.modules['breeze-settings'] = { enabled: false }; await mods.sync()
   assert.equal((await mods.use('voice').speak('旧引擎')).engine, 'http'); assert.equal(remoteRequests.length, 0)
@@ -153,9 +162,9 @@ test('local TTS precedence remains unchanged and does not invoke Breeze/RVC', as
   assert.deepEqual(localCalls, [{ name: 'tts', body: { text: '本地优先' } }])
 })
 test('failed/missing local result falls through to selected Breeze', async () => {
-  for (const bad of ['error', 'missing']) {
+  for (const [bad, text] of [['error', '回落一'], ['missing', '回落二']]) {
     reset(); localActive = true; localError = bad === 'error'; localMissing = bad === 'missing'
-    assert.equal((await mods.use('voice').speak('回落')).engine, 'breezeblue')
+    assert.equal((await mods.use('voice').speak(text)).engine, 'breezeblue')
     assert.equal(remoteRequests.length, 1)
   }
 })
@@ -188,12 +197,18 @@ test('exhausted connection retries fall back and remember final reason', async (
   assert.equal(remoteRequests.length, 2); assert.equal(oldRequests.length, 1)
   assert.match((await route('/ext/breeze-settings/breeze/status')).lastFallback.reason, /无法连接/)
 })
-test('HTTP responses are never retried regardless of retry count', async () => {
+test('non-retryable HTTP statuses (401) never retry regardless of retry count', async () => {
   reset(); cfg.ext['breeze-settings'].retryCount = 3; cfg.ext['breeze-settings'].retryDelaySeconds = 0
-  remote = () => new Response('{}', { status: 429 })
-  assert.equal((await mods.use('voice').speak('不重试429')).engine, 'http')
+  remote = () => new Response('{}', { status: 401 })
+  assert.equal((await mods.use('voice').speak('不重试401')).engine, 'http')
   assert.equal(remoteRequests.length, 1)
-  assert.ok(!logs.some(x => x.includes('重试 1/')), 'HTTP responses must not trigger retries')
+  assert.ok(!logs.some(x => x.includes('重试 1/')), 'HTTP 401 must not trigger retries')
+})
+test('429 with fallback off exhausts backoff and throws without touching originals', async () => {
+  reset(); cfg.ext['breeze-settings'].fallback = false; cfg.ext['breeze-settings'].retryCount = 2; cfg.ext['breeze-settings'].retryDelaySeconds = 0
+  remote = () => new Response('{}', { status: 429 })
+  await assert.rejects(mods.use('voice').speak('严格429'), e => e.status === 429)
+  assert.equal(remoteRequests.length, 3)
 })
 test('retryCount 0 disables connection retry', async () => {
   reset(); cfg.ext['breeze-settings'].retryCount = 0; cfg.ext['breeze-settings'].retryDelaySeconds = 0
@@ -201,15 +216,17 @@ test('retryCount 0 disables connection retry', async () => {
   assert.equal((await mods.use('voice').speak('零重试')).engine, 'http')
   assert.equal(remoteRequests.length, 1)
 })
-test('emotion provider routes per emotion and sends dynamic instructions with native tags', async () => {
+test('emotion provider routes per emotion and applies instruction x arousal guidance', async () => {
   reset(); cfg.ext['breeze-settings'].provider = 'emotion'
-  cfg.ext['breeze-settings'].emotion = { endpoints: [{ id: 'e1', name: '自训练', method: 'GET', urlTemplate: base + '/emo?text={text}&emotion={emotion}', body: '', headers: '' }], routing: { calm: 'e1' }, templates: [] }
+  cfg.ext['breeze-settings'].emotion = { endpoints: [{ id: 'e1', name: '自训练', method: 'GET', urlTemplate: base + '/emo?text={text}&emotion={emotion}', body: '', headers: '' }], routing: { calm: 'e1' }, templates: [],
+    emotions: { excited: { instructions: '兴奋一点！', guidance: 'follow' } }, arousal: { L: 2, M: 4, H: 6 } }
   const r1 = await mods.use('voice').speak('[calm:M]你好')
   assert.equal(r1.engine, '自训练'); assert.match(lastUrl(), /emotion=calm/)
   const r2 = await mods.use('voice').speak('[excited:H]冲啊[laugh]')
   assert.equal(r2.engine, 'breezeblue')
   const body = JSON.parse(remoteRequests.at(-1)?.body || '{}')
-  assert.equal(body.text, '冲啊 [笑]'); assert.match(body.instructions, /兴奋/); assert.equal(body.voice_settings.speed, 1.15)
+  assert.equal(body.text, '冲啊 [笑]'); assert.equal(body.instructions, '兴奋一点！'); assert.equal(body.voice_settings.guidance_scale, 6)
+  assert.equal('speed' in body.voice_settings, false); assert.equal('volume' in body.voice_settings, false)
 })
 test('emotion leg falls through endpoint failure to the Breeze leg', async () => {
   reset(); cfg.ext['breeze-settings'].provider = 'emotion'; cfg.ext['breeze-settings'].retryCount = 0
@@ -227,7 +244,7 @@ test('emotion markers are stripped on the builtin provider', async () => {
 })
 function lastUrl() { return remoteRequests.at(-1)?.url || oldRequests.at(-1)?.url || '' }
 test('strict mode throws instead of silently changing voice', async () => {
-  reset(); cfg.ext['breeze-settings'].fallback = false; remote = () => new Response('{}', { status: 429 })
+  reset(); cfg.ext['breeze-settings'].fallback = false; cfg.ext['breeze-settings'].retryCount = 0; remote = () => new Response('{}', { status: 429 })
   await assert.rejects(mods.use('voice').speak('不回退'), e => e.status === 429)
   assert.equal(oldRequests.length, 0)
 })
@@ -255,18 +272,52 @@ test('RVC also applies exactly once on original fallback TTS', async () => {
 test('config edits take effect without module reload or changing cfg.voice', async () => {
   reset(); const before = structuredClone(cfg.voice)
   await mods.use('voice').speak('一')
-  setConfig({ ...cfg, ext: { 'breeze-settings': { ...cfg.ext['breeze-settings'], voiceId: 'voc_new', instructions: '温柔', speed: 0.9 } } })
+  setConfig({ ...cfg, ext: { 'breeze-settings': { ...cfg.ext['breeze-settings'], voiceId: 'voc_new', instructions: '温柔' } } })
   await mods.use('voice').speak('二')
   assert.match(remoteRequests[1].url, /voc_new/); assert.equal(JSON.parse(remoteRequests[1].body).instructions, '温柔')
   assert.deepEqual(cfg.voice, before)
+})
+test('leading interjections get "……" on the Breeze leg only', async () => {
+  reset()
+  await mods.use('voice').speak('嗯，我在。')
+  assert.equal(JSON.parse(remoteRequests.at(-1).body).text, '……嗯，我在。')
+  reset(); cfg.ext['breeze-settings'].provider = 'builtin'
+  await mods.use('voice').speak('嗯，我在。')
+  assert.match(decodeURIComponent(oldRequests.at(-1).url), /嗯/)
+})
+test('hash cache serves identical text+params without a second paid request', async () => {
+  reset()
+  const a = await mods.use('voice').speak('喂，睡了吗。')
+  const b = await mods.use('voice').speak('喂，睡了吗。')
+  assert.equal(remoteRequests.length, 1, 'same text+params must hit the cache')
+  assert.equal(readFileSync(b.file).toString(), readFileSync(a.file).toString())
+  await mods.use('voice').speak('喂呀')
+  assert.equal(remoteRequests.length, 2, 'different text is a different cache key')
+})
+test('429 is retried with backoff and succeeds without billing-side effects', async () => {
+  reset(); cfg.ext['breeze-settings'].retryCount = 2; cfg.ext['breeze-settings'].retryDelaySeconds = 0
+  let n = 0
+  remote = () => { n++; if (n < 3) return new Response('{}', { status: 429 }); return new Response(wav, { headers: { 'content-type': 'audio/wav' } }) }
+  assert.equal((await mods.use('voice').speak('限流重试')).engine, 'breezeblue')
+  assert.equal(remoteRequests.length, 3); assert.ok(logs.some(x => x.includes('429')))
+})
+test('402 three times in a row trips the breaker and Breeze leg pauses 10 minutes', async () => {
+  reset(); remote = () => new Response('{}', { status: 402 })
+  for (let i = 0; i < 3; i++) assert.equal((await mods.use('voice').speak('额度测试' + i)).engine, 'http')
+  assert.equal(remoteRequests.length, 3)
+  const status = await route('/ext/breeze-settings/breeze/status')
+  assert.ok(status.breakerUntil > Date.now())
+  await mods.use('voice').speak('熔断期间')
+  assert.equal(remoteRequests.length, 3, 'Breeze leg must stay off while the breaker is open')
+  assert.ok(logs.some(x => x.includes('熔断')))
 })
 test('password settings mask public config and retain saved key when blank', () => {
   reset()
   const pub = publicConfig(cfg)
   assert.equal(pub.ext['breeze-settings'].apiKey, ''); assert.equal(pub.ext['breeze-settings'].apiKeySet, true)
-  const updated = mergeFromPanel(cfg, { ext: { 'breeze-settings': { apiKey: '', speed: 0.8 } } })
+  const updated = mergeFromPanel(cfg, { ext: { 'breeze-settings': { apiKey: '', guidanceScale: 4 } } })
   assert.equal(updated.ext['breeze-settings'].apiKey, cfg.ext['breeze-settings'].apiKey)
-  assert.equal(updated.ext['breeze-settings'].speed, 0.8)
+  assert.equal(updated.ext['breeze-settings'].guidanceScale, 4)
   assert.equal(mergeFromPanel(cfg, { ext: { 'breeze-settings': { apiKey: null } } }).ext['breeze-settings'].apiKey, '')
 })
 test('custom status and picker routes match ExtPanel URL and never expose key', async () => {
@@ -360,11 +411,11 @@ test('console status/save mask keys, keep unrelated config, and reject stale wri
   const state = await route('/ext/breeze-settings/console/status')
   assert.equal(state.settings.apiKey, ''); assert.equal(state.settings.apiKeySet, true)
   assert.equal(state.enhancedAvailable, true)
-  const r = await route('/ext/breeze-settings/console/save', { revision: state.revision, settings: { speed: 0.9, apiKey: '' }, original: { engine: 'http' } })
-  assert.equal(r.ok, true, r.message); assert.equal(cfg.ext['breeze-settings'].speed, 0.9)
+  const r = await route('/ext/breeze-settings/console/save', { revision: state.revision, settings: { guidanceScale: 4, apiKey: '' }, original: { engine: 'http' } })
+  assert.equal(r.ok, true, r.message); assert.equal(cfg.ext['breeze-settings'].guidanceScale, 4)
   assert.equal(cfg.ext['breeze-settings'].apiKey, 'brz_fixture_secret'); assert.deepEqual(cfg.ext.unrelated, { keep: 1 })
-  assert.equal((await route('/ext/breeze-settings/console/save', { revision: state.revision, settings: { speed: 1.1 } })).ok, false)
-  assert.equal(cfg.ext['breeze-settings'].speed, 0.9)
+  assert.equal((await route('/ext/breeze-settings/console/save', { revision: state.revision, settings: { guidanceScale: 11 } })).ok, false)
+  assert.equal(cfg.ext['breeze-settings'].guidanceScale, 4)
 })
 test('console actual preview honors off state and cannot bypass stored revision', async () => {
   reset()

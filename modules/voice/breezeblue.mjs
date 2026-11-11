@@ -1,18 +1,20 @@
 // BreezeBlue Developer API adapter. No SDK, no automatic paid retries, no secrets in output.
-import { mkdirSync, writeFileSync, readdirSync, lstatSync, unlinkSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readdirSync, lstatSync, unlinkSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 export const API_BASE = 'https://api.breeze.blue/v1'
 export const FORMATS = ['wav', 'wav_24000', 'mp3', 'mp3_24000_64', 'mp3_24000_96', 'mp3_24000_128', 'mp3_24000_160']
 export const DEFAULTS = Object.freeze({
-  provider: 'builtin', apiKey: '', voiceId: '', modelId: 'breeze-tts-2',
-  languageCode: '', instructions: '', guidanceScale: 1, speed: 1, volume: 1,
-  speakerBoost: false, outputFormat: 'wav', timeoutSeconds: 300, fallback: true,
-  retryCount: 2, retryDelaySeconds: 1,
+  provider: 'builtin', apiKey: '', voiceId: '', modelId: 'breeze-tts-2-multilingual',
+  languageCode: 'zh', instructions: '', guidanceScale: 1,
+  speakerBoost: true, outputFormat: 'wav', timeoutSeconds: 300, fallback: true,
+  retryCount: 2, retryDelaySeconds: 1, promptTags: true,
   emotion: Object.freeze({
     endpoints: [], templates: [],
     routing: Object.freeze({ calm: 'breezeblue', playful: 'breezeblue', down: 'breezeblue', angry: 'breezeblue', excited: 'breezeblue', proud: 'breezeblue', whiny: 'breezeblue', lazy: 'breezeblue' }),
+    emotions: Object.freeze(Object.fromEntries(['calm', 'playful', 'down', 'angry', 'excited', 'proud', 'whiny', 'lazy'].map(k => [k, Object.freeze({ instructions: '', guidance: 'follow' })]))),
+    arousal: Object.freeze({ L: 2, M: 4, H: 6 }),
   }),
 })
 const MAX_AUDIO_BYTES = 32 * 1024 * 1024
@@ -75,27 +77,34 @@ export function normalizeSettings(raw = {}, { requireVoice = true } = {}) {
   return {
     apiKey, voiceId, modelId, languageCode, instructions, outputFormat,
     guidanceScale: numberSetting(raw.guidanceScale, 1, 1, 10, '引导强度'),
-    speed: numberSetting(raw.speed, 1, 0.5, 2, '语速'),
-    volume: numberSetting(raw.volume, 1, 0.01, 2, '音量'),
-    speakerBoost: boolSetting(raw.speakerBoost, false),
+    speakerBoost: boolSetting(raw.speakerBoost, true),
     timeoutMs: numberSetting(raw.timeoutSeconds, 300, 10, 600, '超时秒数') * 1000,
   }
 }
 
+// 合成模型会吞句首短语气词（嗯/喂/呜呜…）：句首挂"……"治愈（矩阵实测，幂等）。
+export const LEADING_FILL_RE = /^(.)\1*(?=[，。！？、—…～])/u
+
 export function buildTtsRequest(text, raw) {
   if (typeof text !== 'string' || !text.trim()) throw new BreezeError('没有要念的文字。', 'INVALID_TEXT')
-  const clean = text.trim()
+  let clean = text.trim()
+  // 省略号在前瞻类里，所以"已带前缀"要显式防重：模型写过的 …… 不再加。
+  if (!clean.startsWith('…') && LEADING_FILL_RE.test(clean)) clean = '……' + clean
   // Stay under the documented default quota; do not silently truncate or multiply paid calls.
   if (Array.from(clean).length > 1000) throw new BreezeError('Breeze 单次最多 1000 个字符，请拆成多条语音；本模块不会自动拆单扣费。', 'TEXT_TOO_LONG')
   const config = normalizeSettings(raw)
+  // 五字段请求形状（矩阵实测最稳）：文本 / 可选指令 / 模型 / 语言 / {guidance_scale, use_speaker_boost}。
   const body = {
     text: clean,
-    voice_settings: { guidance_scale: config.guidanceScale, speed: config.speed,
-      volume: config.volume, use_speaker_boost: config.speakerBoost },
+    voice_settings: { guidance_scale: config.guidanceScale, use_speaker_boost: config.speakerBoost },
   }
   if (config.modelId) body.model_id = config.modelId
   if (config.languageCode) body.language_code = config.languageCode
   if (config.instructions) body.instructions = config.instructions
+  config.cacheKey = createHash('sha256').update(JSON.stringify({
+    text: clean, voiceId: config.voiceId, modelId: config.modelId, languageCode: config.languageCode,
+    instructions: config.instructions, guidanceScale: config.guidanceScale, speakerBoost: config.speakerBoost, outputFormat: config.outputFormat,
+  })).digest('hex')
   return {
     config,
     url: `${API_BASE}/text-to-speech/${encodeURIComponent(config.voiceId)}?output_format=${encodeURIComponent(config.outputFormat)}&delivery=sync`,
@@ -154,18 +163,18 @@ export function audioType(buf, format) {
   throw new BreezeError('Breeze 返回内容不是所请求的 WAV/MP3；已拒绝写入，避免把错误文本当音频播放。', 'INVALID_AUDIO')
 }
 
-export function saveAudio(buf, format, directory) {
+export function saveAudio(buf, format, directory, cacheKey) {
   const { ext, mime } = audioType(buf, format)
   mkdirSync(directory, { recursive: true })
-  // Only our own UUID files; never traverse subfolders or clean another engine's cache.
+  // Only our own files (hash keys + legacy UUIDs); never traverse subfolders or clean another engine's cache.
   for (const name of readdirSync(directory)) {
-    if (!/^breeze-[0-9a-f-]{36}\.(wav|mp3)$/.test(name)) continue
+    if (!/^breeze-([0-9a-f]{64}|[0-9a-f-]{36})\.(wav|mp3)$/.test(name)) continue
     try {
       const p = join(directory, name), st = lstatSync(p)
       if (st.isFile() && Date.now() - st.mtimeMs > 86400000) unlinkSync(p)
     } catch { /* best-effort retention */ }
   }
-  const file = join(directory, `breeze-${randomUUID()}.${ext}`)
+  const file = join(directory, `breeze-${cacheKey || randomUUID()}.${ext}`)
   writeFileSync(file, buf, { flag: 'wx', mode: 0o600 })
   return { file, mime, bytes: buf.length, engine: 'breezeblue' }
 }
@@ -228,11 +237,18 @@ export function createBreezeClient({ fetchImpl = (...args) => globalThis.fetch(.
   return {
     async synthesize(text, raw, directory) {
       const { config, url, init } = buildTtsRequest(text, raw)
+      const ext = config.outputFormat.startsWith('wav') ? 'wav' : 'mp3'
       const s = requestSignal(config.timeoutMs)
       return queue(async () => {
+        // 探针放在队列内：相同请求在排队期间可能已被完成，同时保证队列满/串行语义不变。
+        const cached = join(directory, `breeze-${config.cacheKey}.${ext}`)
+        if (existsSync(cached)) {
+          const mime = ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
+          return { file: cached, mime, bytes: 0, engine: 'breezeblue', cached: true }
+        }
         const buf = await request(url, init, config, MAX_AUDIO_BYTES, true, s)
         s.throwIfAborted()
-        return saveAudio(buf, config.outputFormat, directory)
+        return saveAudio(buf, config.outputFormat, directory, config.cacheKey)
       }, s)
     },
     async voices(raw, { type = 'personal', search = '', pageToken = '', page = 1 } = {}) {

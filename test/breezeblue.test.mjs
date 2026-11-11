@@ -27,38 +27,58 @@ function mock(respond) {
 
 test('request contract: official URL, xi-api-key, synchronous raw audio, safe JSON text', () => {
   const text = '她说"你好"\n[笑] 世界 🎵'
-  const { url, init } = buildTtsRequest(text, { ...config, instructions: '  温柔地说。 ', guidanceScale: 3.5, speed: 0.95, volume: 0.8, speakerBoost: true, languageCode: 'ZH' })
+  const { url, init } = buildTtsRequest(text, { ...config, instructions: '  温柔地说。 ', guidanceScale: 3.5, speakerBoost: true, languageCode: 'ZH' })
   assert.equal(url, API_BASE + '/text-to-speech/voc_demo?output_format=wav&delivery=sync')
   assert.equal(init.method, 'POST'); assert.equal(init.redirect, 'error')
   assert.equal(init.headers['xi-api-key'], config.apiKey)
-  assert.deepEqual(JSON.parse(init.body), { text, model_id: 'breeze-tts-2', language_code: 'zh', instructions: '温柔地说。', voice_settings: { guidance_scale: 3.5, speed: 0.95, volume: 0.8, use_speaker_boost: true } })
+  assert.deepEqual(JSON.parse(init.body), { text, model_id: 'breeze-tts-2', language_code: 'zh', instructions: '温柔地说。', voice_settings: { guidance_scale: 3.5, use_speaker_boost: true } })
   assert.ok(!url.includes(config.apiKey))
 })
-test('optional fields omitted when blank, defaults honor explicit zero-invalid and one', () => {
+test('five-field shape: speed/volume are never sent; defaults guidance 1 + boost true', () => {
   const { init } = buildTtsRequest(' 嗨 ', { ...config, modelId: '', languageCode: '', instructions: '' })
   const body = JSON.parse(init.body)
   assert.equal(body.text, '嗨'); assert.equal(body.model_id, undefined)
   assert.equal(body.language_code, undefined); assert.equal(body.instructions, undefined)
-  assert.deepEqual(body.voice_settings, { guidance_scale: 1, speed: 1, volume: 1, use_speaker_boost: false })
+  assert.deepEqual(body.voice_settings, { guidance_scale: 1, use_speaker_boost: true })
+  assert.equal('speed' in body.voice_settings, false); assert.equal('volume' in body.voice_settings, false)
+})
+test('leading interjections get the "……" prefix; already-prefixed text is left alone', () => {
+  const body = t => JSON.parse(buildTtsRequest(t, config).init.body).text
+  assert.equal(body('嗯，我在。'), '……嗯，我在。')
+  assert.equal(body('……嗯，我在。'), '……嗯，我在。')
+  assert.equal(body('呜呜呜…好难受'), '……呜呜呜…好难受')
+  assert.equal(body('你好，吃了吗'), '你好，吃了吗')
+  assert.equal(body('嗯'), '嗯')
+})
+test('cache key covers text and synthesis parameters', () => {
+  const a = buildTtsRequest('你好', config).config.cacheKey
+  assert.match(a, /^[0-9a-f]{64}$/)
+  assert.notEqual(a, buildTtsRequest('你好呀', config).config.cacheKey)
+  assert.notEqual(a, buildTtsRequest('你好', { ...config, guidanceScale: 4 }).config.cacheKey)
+  assert.notEqual(a, buildTtsRequest('你好', { ...config, voiceId: 'voc_other' }).config.cacheKey)
+  assert.equal(buildTtsRequest('你好', config).config.cacheKey, a)
 })
 for (const [key, value] of [
   ['apiKey', ''], ['apiKey', 'bad\nheader'], ['apiKey', {}], ['voiceId', ''], ['voiceId', '../leak'], ['voiceId', 'a?key=x'],
   ['voiceId', 'https://evil.example'], ['modelId', 'bad model'], ['modelId', 'a'.repeat(121)], ['languageCode', 'zho'],
-  ['guidanceScale', 0], ['guidanceScale', 11], ['guidanceScale', 'NaN'], ['speed', 0.1], ['speed', 3], ['volume', 0], ['volume', 3],
+  ['guidanceScale', 0], ['guidanceScale', 11], ['guidanceScale', 'NaN'],
   ['speakerBoost', 'false'], ['timeoutSeconds', 0], ['timeoutSeconds', 601], ['timeoutSeconds', true], ['outputFormat', 'pcm'], ['instructions', '长'.repeat(2001)],
 ]) test(`invalid configuration rejected before network: ${key}=${String(value).slice(0, 20)}`, () => {
-  assert.throws(() => buildTtsRequest('你好', { ...config, [key]: value }), /Breeze|Voice|模型|语言|强度|语速|音量|超时|WAV|指令/)
+  assert.throws(() => buildTtsRequest('你好', { ...config, [key]: value }), /Breeze|Voice|模型|语言|强度|超时|WAV|指令/)
 })
 test('empty, nonstring and overlong texts never generate; Unicode counted as characters', () => {
   for (const v of ['', '  ', null, 123, '文'.repeat(1001)]) assert.throws(() => buildTtsRequest(v, config))
   assert.equal(Array.from(JSON.parse(buildTtsRequest('🎵'.repeat(1000), config).init.body).text).length, 1000)
 })
-test('WAV returned byte-for-byte, unique safe paths', async () => {
+test('identical text+params hit the hash cache and never re-bill', async () => {
   const { client, hits } = mock(() => audio())
   const a = await client.synthesize('你好', config, root)
   const b = await client.synthesize('你好', config, root)
   assert.equal(a.engine, 'breezeblue'); assert.equal(a.mime, 'audio/wav')
-  assert.notEqual(a.file, b.file); assert.deepEqual(readFileSync(a.file), wav()); assert.equal(hits.length, 2)
+  assert.equal(b.cached, true); assert.equal(b.file, a.file); assert.deepEqual(readFileSync(a.file), wav())
+  assert.equal(hits.length, 1, 'second identical request must be served from cache')
+  const c = await client.synthesize('你好', { ...config, voiceId: 'voc_other' }, root)
+  assert.notEqual(c.file, a.file); assert.equal(hits.length, 2)
 })
 test('MP3 returned byte-for-byte in .mp3, correct Accept and query', async () => {
   const { client, hits } = mock(() => audio(mp3, 'audio/mpeg'))
@@ -76,37 +96,37 @@ for (const [title, buffer, mime] of [['HTML', Buffer.from('<html>' + 'x'.repeat(
 }
 for (const status of [400, 401, 402, 403, 404, 422, 429, 503, 504]) test(`HTTP ${status} error safely reported, never automatically retried`, async () => {
   const { client, hits } = mock(() => json({ ok: false, code: 'test_code', detail: `bad ${config.apiKey}` }, status, { 'retry-after': '5', 'history-item-id': 'hist_demo' }))
-  await assert.rejects(client.synthesize('你好', config, root), e => e.status === status && !e.message.includes(config.apiKey) && e.message.includes('未自动重试') && e.message.includes('平台'))
+  await assert.rejects(client.synthesize('你好', config, join(root, 'http-' + status)), e => e.status === status && !e.message.includes(config.apiKey) && e.message.includes('未自动重试') && e.message.includes('平台'))
   assert.equal(hits.length, 1)
 })
 test('202 async response is not accepted as audio or resubmitted', async () => {
   const { client, hits } = mock(() => json({ generation_job_id: 'job' }, 202))
-  await assert.rejects(client.synthesize('你好', config, root), e => e.code === 'UNEXPECTED_STATUS')
+  await assert.rejects(client.synthesize('你好', config, join(root, 'async')), e => e.code === 'UNEXPECTED_STATUS')
   assert.equal(hits.length, 1)
 })
 test('unknown native error never echoes headers or secrets', async () => {
   const { client } = mock(() => { throw new Error(`connection failed xi-api-key=${config.apiKey}`) })
-  await assert.rejects(client.synthesize('你好', config, root), e => e.code === 'NETWORK_ERROR' && !e.message.includes(config.apiKey))
+  await assert.rejects(client.synthesize('你好', config, join(root, 'native')), e => e.code === 'NETWORK_ERROR' && !e.message.includes(config.apiKey))
 })
 test('declared huge response rejected before buffering', async () => {
   const { client } = mock(() => new Response(wav(), { headers: { 'content-type': 'audio/wav', 'content-length': String(40 * 1024 * 1024) } }))
-  await assert.rejects(client.synthesize('你好', config, root), e => e.code === 'RESPONSE_TOO_LARGE')
+  await assert.rejects(client.synthesize('你好', config, join(root, 'huge')), e => e.code === 'RESPONSE_TOO_LARGE')
 })
 test('oversized streamed body rejected without Content-Length', async () => {
   const { client } = mock(() => new Response(new ReadableStream({ start(controller) { for (let i = 0; i < 33; i++) controller.enqueue(new Uint8Array(1024 * 1024)); controller.close() } })))
-  await assert.rejects(client.synthesize('你好', config, root), e => e.code === 'RESPONSE_TOO_LARGE')
+  await assert.rejects(client.synthesize('你好', config, join(root, 'streamed')), e => e.code === 'RESPONSE_TOO_LARGE')
 })
 test('parallel requests serialized, distinct configs/text stay isolated', async () => {
   let active = 0, peak = 0
   const { client, hits } = mock(async () => { active++; peak = Math.max(peak, active); await new Promise(r => setTimeout(r, 10)); active--; return audio() })
-  await Promise.all([client.synthesize('一', config, root), client.synthesize('二', { ...config, voiceId: 'voc_other' }, root), client.synthesize('三', config, root)])
+  await Promise.all([client.synthesize('一', config, root), client.synthesize('二', { ...config, voiceId: 'voc_other' }, root), client.synthesize('三', { ...config, instructions: '慢一点' }, root)])
   assert.equal(peak, 1); assert.deepEqual(hits.map(h => JSON.parse(h.body).text), ['一', '二', '三'])
   assert.match(hits[1].url, /voc_other/)
 })
 test('failed queued request does not poison the queue', async () => {
   let n = 0
   const { client } = mock(() => ++n === 1 ? json({ detail: 'invalid' }, 401) : audio())
-  const results = await Promise.allSettled([client.synthesize('一', config, root), client.synthesize('二', config, root)])
+  const results = await Promise.allSettled([client.synthesize('甲', config, root), client.synthesize('乙', config, root)])
   assert.equal(results[0].status, 'rejected'); assert.equal(results[1].status, 'fulfilled')
 })
 test('queue bounded and disposal aborts pending work, no extra API calls', async () => {

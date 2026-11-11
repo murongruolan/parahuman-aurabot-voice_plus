@@ -108,11 +108,11 @@ try {
   await page.getByRole('button', { name: '选择已保存音色', exact: true }).click()
   await page.getByRole('button', { name: '获取音色列表', exact: true }).click()
   await page.getByLabel('选择 Breeze 音色').selectOption('voc_browser')
-  await page.getByLabel('语速倍率').fill('0.95')
+  await page.getByLabel('表演指令').fill('自然、轻快一点。')
   await page.getByRole('button', { name: '保存配置', exact: true }).click()
   await page.waitForFunction(() => !document.querySelector('.vp-footer .primary:not([disabled])'))
   assert.equal(cfg.ext['breeze-settings'].voiceId, 'voc_browser')
-  assert.equal(cfg.ext['breeze-settings'].speed, 0.95)
+  assert.equal(cfg.ext['breeze-settings'].instructions, '自然、轻快一点。')
   assert.equal((await page.content()).includes('brz_browser_fixture_only'), false, 'key must never be rendered back')
 
   // Retry settings in advanced: editable, saved, validated bounds.
@@ -206,9 +206,11 @@ try {
   await page.getByRole('button', { name: '保存配置', exact: true }).click()
   await page.waitForFunction(() => !document.querySelector('.vp-footer .primary:not([disabled])'))
   rejectTts = true
+  // 首句已在成功预览时进 hash 缓存：同句重试不再计费，改用新句子验证 429 退避链路。
+  await page.getByLabel('试听文本').fill('再来一句，这次会失败。')
   await page.getByRole('button', { name: '生成试听', exact: true }).click()
   await page.getByRole('alert').filter({ hasText: '429' }).waitFor()
-  assert.equal(requests.filter(r => r.method === 'POST').length, 2, 'no automatic retry')
+  assert.equal(requests.filter(r => r.method === 'POST').length, 4, '429 retried twice with backoff then surfaced')
   await page.screenshot({ path: join(artifacts, 'panel-error.png'), fullPage: true })
 
   assert.deepEqual(errors, [])

@@ -20,11 +20,16 @@ test('unrecognized brackets and native Breeze tags stay in the text', () => {
   assert.deepEqual(r, { emotion: 'calm', arousal: 'M', styles: [], text: '[瞎写的]你好[呲牙]', flagged: false })
   assert.equal(parseVoiceTags('他[轻笑]了一[停顿]下').text, '他[轻笑]了一[停顿]下')
 })
-test('applyEmotion merges instructions, scales speed and raises guidance; unflagged passes config through', () => {
-  const cfg = applyEmotion({ instructions: '温柔', speed: 1, guidanceScale: 1 }, parseVoiceTags('[down:L]对不起'))
-  assert.match(cfg.instructions, /温柔/); assert.match(cfg.instructions, /失落/)
-  assert.equal(cfg.speed, 0.9); assert.equal(cfg.guidanceScale, 2)
-  const unchanged = { instructions: '', speed: 1, guidanceScale: 1 }
+test('applyEmotion follows the empirical laws: empty instructions = pure text, guidance from emotion row x arousal', () => {
+  const base = { guidanceScale: 1, speakerBoost: true,
+    emotion: { emotions: { down: { instructions: '', guidance: 'follow' }, excited: { instructions: '兴奋一点！', guidance: 'follow' }, angry: { instructions: '生气！', guidance: 8 } }, arousal: { L: 2, M: 4, H: 6 } } }
+  const pure = applyEmotion(base, parseVoiceTags('[down:L]对不起'))
+  assert.equal(pure.instructions, ''); assert.equal(pure.guidanceScale, 1)
+  const follow = applyEmotion(base, parseVoiceTags('[excited:H]冲啊'))
+  assert.equal(follow.instructions, '兴奋一点！'); assert.equal(follow.guidanceScale, 6)
+  const fixed = applyEmotion(base, parseVoiceTags('[angry:M]哼'))
+  assert.equal(fixed.guidanceScale, 8)
+  const unchanged = { guidanceScale: 3 }
   assert.equal(applyEmotion(unchanged, parseVoiceTags('你好')), unchanged)
   assert.equal(Object.keys(DEFAULT_ROUTING).length, 8)
 })

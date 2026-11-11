@@ -25,9 +25,10 @@ test('unknown mode and safe-mode activation rejected', () => {
 })
 test('Breeze validated patch preserves unknown legacy settings and blank key', () => {
   const old = { apiKey: 'secret', legacy: 2 }
-  assert.deepEqual(extensionPatch({ speed: 0.9, apiKey: '' }, old), { ...old, speed: 0.9 })
+  assert.deepEqual(extensionPatch({ retryCount: 1, apiKey: '' }, old), { ...old, retryCount: 1 })
   assert.equal(extensionPatch({ apiKey: null }, old).apiKey, '')
-  for (const patch of [{ unknown: 1 }, { speed: 0 }, { speed: '1' }, { volume: 3 }, { provider: 'other' }, { voiceId: '../x' }, { languageCode: 'bad' }, { fallback: 'true' }]) assert.throws(() => extensionPatch(patch, old))
+  assert.equal(extensionPatch({ promptTags: false }, old).promptTags, false)
+  for (const patch of [{ unknown: 1 }, { speed: 0.9 }, { volume: 1 }, { speed: 0 }, { volume: '1' }, { promptTags: 'yes' }, { provider: 'other' }, { voiceId: '../x' }, { languageCode: 'bad' }, { fallback: 'true' }]) assert.throws(() => extensionPatch(patch, old))
 })
 test('original patch allows only TTS parameters and preserves RVC/ASR', () => {
   const c = config().voice
@@ -48,11 +49,11 @@ test('console state hides key/header and unrecognized extension fields', () => {
 })
 test('save validates before changing data and rejects concurrent config edits', () => {
   const api = apiFixture(); const rev = revision(api.config()), before = structuredClone(api.config())
-  assert.throws(() => saveConsole(api, { revision: rev, settings: { speed: 0.8 }, original: { enabled: false } }))
+  assert.throws(() => saveConsole(api, { revision: rev, settings: { guidanceScale: 0 }, original: { enabled: false } }))
   assert.deepEqual(api.config(), before)
-  saveConsole(api, { revision: rev, settings: { speed: 0.8 }, original: { engine: 'windows' } })
-  assert.equal(api.config().voice.engine, 'windows')
-  assert.throws(() => saveConsole(api, { revision: rev, settings: { speed: 1 } }), /配置已/)
+  saveConsole(api, { revision: rev, settings: { guidanceScale: 3 }, original: { engine: 'windows' } })
+  assert.equal(api.config().ext['breeze-settings'].guidanceScale, 3); assert.equal(api.config().voice.engine, 'windows')
+  assert.throws(() => saveConsole(api, { revision: rev, settings: { guidanceScale: 5 } }), /配置已/)
   assert.throws(() => saveConsole(api, { revision: revision(api.config()), modules: {} }))
 })
 test('retry settings validate as bounded integers and delay', () => {

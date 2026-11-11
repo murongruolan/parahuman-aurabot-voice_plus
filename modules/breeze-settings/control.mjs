@@ -5,7 +5,7 @@ import { DEFAULTS } from './settings.mjs'
 export const MODES = ['enhanced', 'official', 'off']
 export const ENGINES = ['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http']
 const TEXT_LIMITS = { apiKey: 512, voiceId: 160, modelId: 120, languageCode: 2, instructions: 2000 }
-const NUMBER_RULES = { guidanceScale: [1, 10], speed: [0.5, 2], volume: [0.01, 2], timeoutSeconds: [10, 600], retryDelaySeconds: [0, 10] }
+const NUMBER_RULES = { guidanceScale: [1, 10], timeoutSeconds: [10, 600], retryDelaySeconds: [0, 10] }
 const ORIGINAL_TEXT = { voice: 160, rate: 20, pitch: 20 }
 const GROUPS = {
   cosyvoice: { text: { url: 2048, spkId: 160, instruct: 2000 }, numbers: { sampleRate: [8000, 96000] }, enums: { mode: ['sft', 'instruct'] } },
@@ -15,6 +15,25 @@ const GROUPS = {
 const EMOTION_KEYS = ['calm', 'playful', 'down', 'angry', 'excited', 'proud', 'whiny', 'lazy']
 const EMOTION_LEGS = ['breezeblue', 'builtin']
 const DEFAULT_EMOTION_ROUTING = Object.fromEntries(EMOTION_KEYS.map(key => [key, 'breezeblue']))
+const DEFAULT_EMOTION_ROW = { instructions: '', guidance: 'follow' }
+const DEFAULT_AROUSAL = { L: 2, M: 4, H: 6 }
+
+function emotionTable(raw, current) {
+  const base = object(current) ? current : {}
+  const out = {}
+  for (const key of EMOTION_KEYS) {
+    const row = object(raw?.[key]) ? raw[key] : base[key] || DEFAULT_EMOTION_ROW
+    const guidance = row.guidance === undefined || row.guidance === 'follow' ? 'follow' : number(row.guidance, [1, 10], '情绪 guidance')
+    out[key] = { instructions: string(row.instructions ?? '', 2000, '情绪指令'), guidance }
+  }
+  return out
+}
+function arousalTable(raw, current) {
+  const base = object(current) ? current : DEFAULT_AROUSAL
+  const out = {}
+  for (const key of ['L', 'M', 'H']) out[key] = number(object(raw) && raw[key] !== undefined ? raw[key] : (base[key] ?? DEFAULT_AROUSAL[key]), [1, 10], '唤醒度 guidance')
+  return out
+}
 const object = v => v && typeof v === 'object' && !Array.isArray(v)
 function fail(message) { throw new Error(message) }
 function string(v, max, key) {
@@ -46,6 +65,19 @@ function emotionEndpoint(raw, current, id) {
   const headers = raw.headers === undefined || raw.headers === '' ? (current?.headers ?? '') : raw.headers === null ? '' : string(raw.headers, 16000, '端点请求头')
   return { id, name, method, urlTemplate, body, headers }
 }
+function emotionPreset(raw, current, endpointIds) {
+  if (!object(raw)) fail('情绪预设格式无效。')
+  const name = string(raw.name, 24, '预设名称')
+  if (!name) fail('预设名称不能为空。')
+  const voiceId = string(raw.voiceId ?? (current?.voiceId ?? ''), 160, '预设 Voice ID')
+  if (voiceId && !/^[A-Za-z0-9_-]+$/.test(voiceId)) fail('预设 Voice ID 格式错误。')
+  return {
+    name, voiceId,
+    routing: emotionRouting(object(raw.routing) ? raw.routing : current?.routing || DEFAULT_EMOTION_ROUTING, DEFAULT_EMOTION_ROUTING, endpointIds),
+    emotions: emotionTable(raw.emotions, current?.emotions),
+    arousal: arousalTable(raw.arousal, current?.arousal),
+  }
+}
 export function emotionPatch(raw, current) {
   const base = { routing: {}, endpoints: [], templates: [], ...(object(current) ? current : {}) }
   const endpoints = []
@@ -67,12 +99,10 @@ export function emotionPatch(raw, current) {
   const rawTemplates = object(raw) ? raw.templates : base.templates
   const tpls = Array.isArray(rawTemplates) ? rawTemplates : base.templates
   for (const t of tpls) {
-    const name = string(t?.name, 24, '模板名称')
-    if (!name) fail('模板名称不能为空。')
-    templates.push({ name, routing: emotionRouting(t.routing || {}, DEFAULT_EMOTION_ROUTING, endpointIds) })
+    templates.push(emotionPreset(t, base.templates.find(x => x?.name === t?.name), endpointIds))
   }
-  if (templates.length > 10) fail('情绪模板最多 10 个。')
-  return { endpoints, routing, templates }
+  if (templates.length > 10) fail('情绪预设最多 10 个。')
+  return { endpoints, routing, templates, emotions: emotionTable(object(raw) ? raw.emotions : undefined, base.emotions), arousal: arousalTable(object(raw) ? raw.arousal : undefined, base.arousal) }
 }
 function maskedEmotion(ext) {
   const emo = object(ext?.emotion) ? ext.emotion : {}
@@ -82,6 +112,8 @@ function maskedEmotion(ext) {
     routing: { ...DEFAULT_EMOTION_ROUTING, ...(object(emo.routing) ? emo.routing : {}) },
     endpoints: epList.filter(object).map(e => ({ ...e, headers: '', headersSet: Boolean(e.headers) })),
     templates: tplList.filter(object),
+    emotions: emotionTable(object(emo.emotions) ? emo.emotions : {}, object(emo.emotions) ? emo.emotions : {}),
+    arousal: arousalTable(object(emo.arousal) ? emo.arousal : {}, object(emo.arousal) ? emo.arousal : {}),
   }
 }
 
@@ -106,7 +138,7 @@ export function extensionPatch(raw, current) {
     } else if (key === 'provider') patch[key] = choice(value, ['builtin', 'breezeblue', 'emotion'], key)
     else if (key === 'outputFormat') patch[key] = choice(value, ['wav', 'wav_24000', 'mp3', 'mp3_24000_64', 'mp3_24000_96', 'mp3_24000_128', 'mp3_24000_160'], key)
     else if (key === 'emotion') patch[key] = emotionPatch(value, current?.emotion)
-    else if (key === 'speakerBoost' || key === 'fallback') {
+    else if (key === 'speakerBoost' || key === 'fallback' || key === 'promptTags') {
       if (typeof value !== 'boolean') fail(`${key} 必须是开关值。`)
       patch[key] = value
     } else fail('请求包含不支持的增强语音设置。')

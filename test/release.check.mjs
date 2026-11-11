@@ -8,7 +8,7 @@ import { createModules } from '../upstream/src/core/modules.js'
 import builtinVoice from '../upstream/src/modules/voice/index.js'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const release = join(root, 'dist', 'aurabot-breezeblue-voice-1.3.0')
+const release = join(root, 'dist', 'aurabot-breezeblue-voice-1.4.0')
 const isolated = mkdtempSync(join(root, 'artifacts', 'release-fixture-'))
 const modulesDir = join(isolated, 'modules')
 mkdirSync(modulesDir)
@@ -48,8 +48,8 @@ test('installed release loads and serves voice through official module loader', 
   const status = await route('/console/status', 'GET')
   assert.equal(status.ok, true); assert.equal(status.actualMode, 'enhanced'); assert.equal(status.enhancedAvailable, true)
   assert.equal(status.settings.apiKey, ''); assert.equal(status.settings.apiKeySet, true)
-  const saved = await route('/console/save', 'POST', { revision: status.revision, settings: { speed: 0.9 }, original: { engine: 'windows' } })
-  assert.equal(saved.ok, true); assert.equal(cfg.ext['breeze-settings'].speed, 0.9); assert.equal(cfg.voice.engine, 'windows')
+  const saved = await route('/console/save', 'POST', { revision: status.revision, settings: { guidanceScale: 4 }, original: { engine: 'windows' } })
+  assert.equal(saved.ok, true); assert.equal(cfg.ext['breeze-settings'].guidanceScale, 4); assert.equal(cfg.voice.engine, 'windows')
   const off = await route('/console/mode', 'POST', { revision: saved.revision, mode: 'off' })
   assert.equal(off.ok, true); assert.equal(off.actualMode, 'off'); assert.equal(cfg.voice.enabled, false); assert.equal(mods.running('voice'), null)
   const back = await route('/console/mode', 'POST', { revision: off.revision, mode: 'enhanced' })
