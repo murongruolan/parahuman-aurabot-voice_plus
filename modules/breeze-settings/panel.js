@@ -34,7 +34,11 @@ return function VoicePlusPanel({ toast, reload }) {
   const original = { ...(snapshot?.original || {}), ...originalEdits }
   for (const group of ['http', 'cosyvoice', 'gptsovits']) original[group] = { ...(snapshot?.original?.[group] || {}), ...(originalEdits[group] || {}) }
   const provider = snapshot?.actualMode === 'official' ? 'builtin' : config.provider || 'builtin'
-  const replace = r => { setSnapshot(r); setEdits({}); setOriginalEdits({}) }
+  const replace = r => {
+    setSnapshot(r); setEdits({}); setOriginalEdits({})
+    if (audioUrl.current) { URL.revokeObjectURL(audioUrl.current); audioUrl.current = '' }
+    setAudio(null)
+  }
 
   useEffect(() => {
     live.current = true

@@ -16,7 +16,7 @@ const { fileOf } = __lib('local/local.js')
 export default {
   id: 'voice',
   name: '语音 · BreezeBlue 扩展',
-  version: '1.0.0',
+  version: '1.1.0',
   api: 1,
   description: '基于内置语音模块的用户副本：新增 BreezeBlue，保留原引擎、本地接口、RVC 与 ASR。',
   // Host 1.2.0 hides UI on same-name replacements. The companion breeze-settings module owns it.

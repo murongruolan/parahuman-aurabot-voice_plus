@@ -65,14 +65,14 @@ export function install({ packageDir, modulesDir, apply = false }) {
     if (existsSync(staging)) rmSync(staging, { recursive: true })
   }
   return { ok: true, mode: 'installed', files: count, targets,
-    message: 'Both modules copied. Open Aurabot > Installed, enable breeze-settings and choose your voice version, then configure Breeze in Voice. Existing config was not changed.' }
+    message: 'Both modules copied. Open the standalone 增强语音 page, pick enhanced/official/off, then configure Breeze. Existing config was not changed. To upgrade from 1.0.0, back up and move the old voice/breeze-settings folders out of modules first (this installer intentionally refuses to overwrite).' }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2)
     const i = args.indexOf('--modules')
-    if (i < 0 || !args[i + 1]) throw new Error('Usage: node install.mjs --modules "ABSOLUTE_TARGET_AURABOT_MODULES_DIR" [--install]\nWithout --install: checks only. Run on the intended target machine, NOT on the development PC.')
+    if (i < 0 || !args[i + 1]) throw new Error('Usage: node install.mjs --modules "ABSOLUTE_TARGET_AURABOT_MODULES_DIR" [--install]\nWithout --install: checks only. Run on the intended target machine, NOT on the development PC. Upgrading from 1.0.0: back up and move the old modules out first; this installer never overwrites existing folders.')
     const allowed = new Set(['--modules', args[i + 1], '--install'])
     if (args.some(a => !allowed.has(a))) throw new Error('Unknown argument.')
     console.log(JSON.stringify(install({ packageDir: dirname(fileURLToPath(import.meta.url)), modulesDir: args[i + 1], apply: args.includes('--install') }), null, 2))

@@ -1,6 +1,6 @@
 # BreezeBlue 用户语音模块开发记录
 
-> 2026-11-11：用户要求因额度不足暂停1.1.0实现，保存当前WIP。**请从 `docs/HANDOVER.md` 接续**，分支 `handoff/voice-plus-1.1-wip`。1.0.0基线 `889d522` 已推送并由用户在目标QQ验证；1.1.0后端测试116项通过发生在新面板重写之前，新面板尚未验证。以下为早期工作记录，不是当前WIP完成证明。
+> 2026-11-11 续接完成：1.1.0 独立「增强语音」控制台、三态切换、配置保存与试听已通过 121 项扩展回归和真实 Edge + 未修改宿主客户端验证；发行包为 `dist/aurabot-breezeblue-voice-1.1.0.zip`。1.0.0 保留且仍由用户在目标机器验证可用；1.1.0 **尚未安装到目标机器、尚未通过目标 QQ 链路验收**。以下保留 1.0.0 与 WIP 阶段历史。
 
 目标：基于 dsh-aurabot-qq 内置 voice 模块复制扩展，添加 BreezeBlue 远程 TTS；不修改缓存中的上游源码；交付可安装包、中文使用说明、回归与真实 API 验证。
 
@@ -25,3 +25,12 @@
 边界：目标为另一台机器的 DSH。用户明确：本机 DSH 只可参考结构与实验，不可安装扩展；不写本机 DSH 的 modules/config。所有实验必须在 artifacts 的独立数据根运行。交付便携目录/ZIP及目标机器安装说明，不覆盖已有用户 voice 模块。不承诺真实 QQ 已发出，直到在目标宿主中实际验证。用户允许限额 300 内 API 调用；当前两次成功合成，共25字符，WAV+MP3。认证与音色列表也通过；密钥仅保存在开发根 .private 内，不得入包、日志或文档。
 
 进展补充：官方 fork 已生成 index.mjs/tts.js/rvc.js；tts.js 与 rvc.js 保持字节一致。新增81项测试全通过（之前失败因测试把 song.status 写为 async，已修正替身）；音色 voc_xrszxupbkdfa（玉玲珑）成功 WAV 5.377s/MP3 4.940s。待最后媒体解码校验、浏览器交互、安装包与说明、最终回归。
+
+## 1.1.0 续接完成（2026-11-11）
+
+- 新 `modules/breeze-settings/panel.js` 已按宿主 `new Function` 契约编译，并在真实 Edge + 未修改 `upstream/client/client.js` 中通过独立导航页加载。
+- 后端 `control.mjs`（三态/白名单/revision/脱敏）、`access.mjs`（回环+Host+Origin+方法）、`index.mjs`（独立页 + `/console/status|save|mode|test`）完成。
+- 测试：扩展回归 121 通过 / 0 失败；浏览器浅色、深色、700px 窄屏、官方、关闭、错误截图均已实际查看；无 pageerror。
+- 发行脚本：1.1.0 新目录名，不覆盖 1.0.0；`breeze-settings` 白名单加入 `access.mjs`、`control.mjs`；发行检查覆盖三态 API 与成品试听。
+- 文档：使用说明、测试报告、模块 README、版本字段统一到 1.1.0；升级步骤要求先备份并移出 1.0.0 两个目录。
+- 未做：1.1.0 目标机器安装、目标 QQ 链路验收、新的付费 Breeze 调用。1.0.0 仍为唯一已由用户确认可用的版本。

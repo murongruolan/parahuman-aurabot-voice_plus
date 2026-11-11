@@ -3,64 +3,262 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('../modules/breeze-settings/panel.js', import.meta.url), 'utf8')
-function mount({ call, settings = {}, draft = {}, setSettings = () => {} } = {}) {
-  const state = [], refs = [], effects = [], toasts = []
-  let pos = 0, refPos = 0, initial = true
+const flush = async () => { for (let i = 0; i < 4; i += 1) await Promise.resolve() }
+
+const snapshot = (over = {}) => ({
+  ok: true, revision: 'rev-1', requestedMode: 'enhanced', actualMode: 'enhanced', running: 'user',
+  fallback: false, safeMode: false, moduleError: '', enhancedAvailable: true,
+  settings: { provider: 'breezeblue', apiKey: '', apiKeySet: true, voiceId: 'voc_saved', speed: 1, volume: 1,
+    modelId: 'm1', languageCode: '', instructions: '', guidanceScale: 1, outputFormat: 'wav', timeoutSeconds: 60,
+    speakerBoost: false, fallback: true },
+  original: { engine: 'auto', voice: 'zh-CN-XiaoyiNeural', rate: '+0%', pitch: '+0Hz',
+    http: { headers: '', headersSet: false, method: 'GET', urlTemplate: '', body: '' },
+    cosyvoice: { url: '', mode: 'sft', spkId: '', instruct: '', sampleRate: 24000 },
+    gptsovits: { url: '', refAudio: '', promptText: '' } },
+  localTtsActive: false, rvcVoice: '',
+  ...over,
+})
+
+function mount(call) {
+  const state = [], refs = [], effects = [], cleanups = [], toasts = [], reloads = [], listeners = new Map()
+  const timers = new Map()
+  let pos = 0, refPos = 0, initial = true, timerId = 0
   const React = {
     useState(value) { const n = pos++; if (!(n in state)) state[n] = value; return [state[n], next => { state[n] = typeof next === 'function' ? next(state[n]) : next }] },
     useRef(value) { const n = refPos++; if (!(n in refs)) refs[n] = { current: value }; return refs[n] },
     useEffect(work) { if (initial) effects.push(work) },
   }
   const h = (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity).filter(x => x !== null && x !== false && x !== undefined) })
+  const saved = { window: globalThis.window, setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval }
+  globalThis.window = {
+    addEventListener: (name, fn) => listeners.set(name, fn),
+    removeEventListener: name => listeners.delete(name),
+  }
+  globalThis.setInterval = fn => { const id = ++timerId; timers.set(id, fn); return id }
+  globalThis.clearInterval = id => timers.delete(id)
   const C = new Function('React', 'h', 'ui', 'call', source)(React, h, { Card: 'Card', Btn: 'Btn' }, call)
-  const props = { settings, draftSettings: draft, setSettings, toast: x => toasts.push(x) }
-  const render = () => { pos = 0; refPos = 0; const tree = C(props); initial = false; return tree }
+  const props = { toast: x => toasts.push(x), reload: () => reloads.push(true) }
+  const render = () => { pos = 0; refPos = 0; const tree = C(props); initial = false; while (effects.length) cleanups.push(effects.shift()() || null); return tree }
   const walk = tree => [tree, ...(tree && typeof tree === 'object' ? tree.children.flatMap(walk) : [])]
-  return { render, walk, effects, toasts, props }
+  const find = predicate => walk(render()).find(x => x && typeof x === 'object' && predicate(x))
+  const all = predicate => walk(render()).filter(x => x && typeof x === 'object' && predicate(x))
+  const cleanup = () => { while (cleanups.length) cleanups.pop()?.() }
+  const restore = () => { Object.assign(globalThis, saved) }
+  return { render, find, all, effects, toasts, reloads, listeners, timers, cleanup, restore, state }
 }
-function node(m, predicate) { return m.walk(m.render()).find(x => x && typeof x === 'object' && predicate(x)) }
 
-test('custom panel compiles under the exact host new Function contract', () => {
-  const m = mount({ call: async () => ({ ok: true }) })
-  assert.equal(m.render().type, 'Card')
-  assert.equal(node(m, x => x.type === 'input').props['aria-label'], '搜索音色')
-})
-test('voice list uses /breeze/voices, selected ID only changes draft (no secret access)', async () => {
-  const calls = [], patches = []
-  const m = mount({ draft: { voiceId: '' }, setSettings: patch => patches.push(patch), call: async (path, body) => {
-    calls.push({ path, body }); return { ok: true, voices: [{ voiceId: 'voc_one', name: '玉玲珑' }], hasMore: false, page: 1 }
-  } })
-  await node(m, x => x.type === 'Btn' && x.children.includes('获取音色列表')).props.onClick()
-  assert.deepEqual(calls, [{ path: '/breeze/voices', body: { type: 'personal', search: '', pageToken: '', page: 1 } }])
-  node(m, x => x.props['aria-label'] === '选择 Breeze 音色').props.onChange({ target: { value: 'voc_one' } })
-  assert.deepEqual(patches, [{ voiceId: 'voc_one' }])
-  assert.ok(m.toasts.some(x => x.includes('保存设置')))
-})
-test('pagination keeps filter and sends next cursor', async () => {
+const byText = (m, tag, text) => m.find(x => x.type === tag && x.children.includes(text))
+const field = (m, label) => m.find(x => x.props['aria-label'] === label)
+const modeButton = (m, title) => m.find(x => x.props.role === 'radio' && x.children.some(c => c?.children?.includes(title)))
+
+async function mounted(over = {}) {
   const calls = []
-  const m = mount({ call: async (path, body) => {
-    calls.push({ path, body }); return { ok: true, voices: [{ voiceId: 'voc_' + calls.length, name: '音色' }], hasMore: true, nextPageToken: 'cursor1', page: calls.length }
-  } })
-  await node(m, x => x.type === 'Btn' && x.children.includes('获取音色列表')).props.onClick()
-  await node(m, x => x.type === 'Btn' && x.children.includes('加载更多')).props.onClick()
-  assert.equal(calls[1].body.pageToken, 'cursor1'); assert.equal(calls[1].body.page, 2)
-  const sel = node(m, x => x.props['aria-label'] === '选择 Breeze 音色')
-  assert.equal(sel.children.filter(x => x.type === 'option').length, 3)
+  const m = mount(async (path, body) => {
+    calls.push({ path, body })
+    if (path === '/console/status') return snapshot(over)
+    if (path === '/console/mode') return snapshot({ ...over, requestedMode: body.mode, actualMode: body.mode })
+    return { ok: true }
+  })
+  m.render()
+  await flush()
+  m.render()
+  return { m, calls }
+}
+
+test('panel compiles and mounts with actual mode, no paid or speak call, remount cleanup', async () => {
+  const { m, calls } = await mounted()
+  assert.equal(m.render().type, 'div')
+  assert.equal(m.find(x => x.type === 'h2').children[0], '让每句话，有自己的声音')
+  assert.equal(m.find(x => x.props.role === 'status').children[0], '当前：增强语音')
+  assert.deepEqual(calls.map(c => c.path), ['/console/status'])
+  assert.ok(m.timers.size === 1)
+  assert.ok(m.listeners.has('beforeunload'))
+  const timer = [...m.timers.values()][0]
+  timer()
+  await flush()
+  assert.deepEqual(calls.map(c => c.path), ['/console/status', '/console/status'])
+  m.cleanup()
+  assert.equal(m.timers.size, 0)
+  assert.equal(m.listeners.has('beforeunload'), false)
+  m.restore()
 })
-test('paid preview uses text-only request and prevents duplicate click', async () => {
+
+test('three-state selection is exclusive; dirty edits block mode switch and preview', async () => {
+  const { m, calls } = await mounted()
+  await modeButton(m, '官方语音').props.onClick()
+  await flush()
+  assert.deepEqual(calls.find(c => c.path === '/console/mode').body, { revision: 'rev-1', mode: 'official' })
+  assert.ok(m.toasts.includes('已切换为官方语音'))
+  assert.ok(m.reloads.length > 0)
+
+  field(m, '原有语音引擎').props.onChange({ target: { value: 'windows' } })
+  const buttons = m.all(x => x.props.role === 'radio')
+  assert.equal(buttons.length, 3)
+  assert.ok(buttons.every(x => x.props.disabled === true))
+  assert.equal(byText(m, 'button', '生成试听').props.disabled, true)
+  const modeCalls = calls.filter(c => c.path === '/console/mode').length
+  await modeButton(m, '增强语音').props.onClick()
+  await flush()
+  assert.equal(calls.filter(c => c.path === '/console/mode').length, modeCalls)
+  assert.match(m.find(x => x.props.role === 'alert').children[0], /请先保存/)
+  m.restore()
+})
+
+test('enhanced mode disabled without user voice module; off state blocks preview', async () => {
+  const missing = await mounted({ enhancedAvailable: false })
+  assert.equal(modeButton(missing.m, '增强语音').props.disabled, true)
+  missing.m.restore()
+  const off = await mounted({ requestedMode: 'off', actualMode: 'off' })
+  assert.equal(modeButton(off.m, '关闭语音').props['aria-checked'], true)
+  assert.equal(byText(off.m, 'button', '生成试听').props.disabled, true)
+  off.m.restore()
+})
+
+test('local edits stay local, blank key is not dirty, save sends revision and clears draft', async () => {
+  const saved = snapshot({ revision: 'rev-2', settings: { ...snapshot().settings, speed: 0.8 } })
+  const calls = []
+  const m = mount(async (path, body) => {
+    calls.push({ path, body })
+    if (path === '/console/status') return snapshot()
+    if (path === '/console/save') return saved
+    return { ok: true }
+  })
+  m.render(); await flush(); m.render()
+  field(m, 'Breeze API Key').props.onChange({ target: { value: '' } })
+  assert.equal(byText(m, 'button', '保存配置').props.disabled, true)
+  field(m, '语速倍率').props.onChange({ target: { value: '0.8' } })
+  assert.match(m.find(x => x.props['aria-live'] === 'polite').children[0], /未保存/)
+  assert.equal(byText(m, 'button', '保存配置').props.disabled, false)
+  await byText(m, 'button', '保存配置').props.onClick()
+  await flush()
+  const save = calls.find(c => c.path === '/console/save')
+  assert.equal(save.body.revision, 'rev-1')
+  assert.deepEqual(save.body.settings, { speed: 0.8 })
+  assert.deepEqual(save.body.original, {})
+  assert.equal(m.toasts.at(-1), '语音设置已保存')
+  assert.equal(byText(m, 'button', '保存配置').props.disabled, true)
+  assert.equal(m.find(x => x.props.role === 'status').children[0], '当前：增强语音')
+  m.restore()
+})
+
+test('original engine edits save as a partial patch and keep unrelated configuration', async () => {
+  const calls = []
+  const m = mount(async (path, body) => {
+    calls.push({ path, body })
+    if (path === '/console/status') return snapshot()
+    if (path === '/console/save') return snapshot({ revision: 'rev-2', original: { ...snapshot().original, engine: 'windows' } })
+    return { ok: true }
+  })
+  m.render(); await flush(); m.render()
+  await byText(m, 'button', '原有引擎').props.onClick()
+  const engineRow = m.all(x => x.props.className === 'vp-info').find(x => x.children[0]?.children?.[0] === '生效引擎')
+  assert.equal(engineRow.children[1].children[0], '远程 Breeze', 'side panel shows the saved engine, not the unsaved tab')
+  field(m, '原有语音引擎').props.onChange({ target: { value: 'windows' } })
+  await byText(m, 'button', '保存配置').props.onClick()
+  await flush()
+  assert.deepEqual(calls.find(c => c.path === '/console/save').body.original, { engine: 'windows' })
+  m.restore()
+})
+
+test('voice picker uses saved key, pagination cursors, and is gated by enhanced mode', async () => {
+  const calls = []
+  let page = 0
+  const m = mount(async (path, body) => {
+    calls.push({ path, body })
+    if (path === '/console/status') return snapshot()
+    if (path === '/breeze/voices') {
+      page += 1
+      return { ok: true, voices: [{ voiceId: 'voc_' + page, name: '音色' + page }], hasMore: page === 1, nextPageToken: 'cursor1', page }
+    }
+    return { ok: true }
+  })
+  m.render(); await flush(); m.render()
+  await byText(m, 'button', '选择已保存音色').props.onClick()
+  await byText(m, 'button', '获取音色列表').props.onClick()
+  await flush(); m.render()
+  await byText(m, 'button', '加载更多').props.onClick()
+  await flush(); m.render()
+  const list = calls.filter(c => c.path === '/breeze/voices').map(c => c.body)
+  assert.deepEqual(list, [
+    { type: 'personal', search: '', page: 1, pageToken: '' },
+    { type: 'personal', search: '', page: 2, pageToken: 'cursor1' },
+  ])
+  const select = field(m, '选择 Breeze 音色')
+  const options = select.children.filter(x => x.type === 'option')
+  assert.equal(options.length, 4)
+  assert.ok(options.some(x => x.props.value === 'voc_saved'))
+  assert.ok(options.some(x => x.props.value === 'voc_2'))
+  m.restore()
+
+  const gated = await mounted({ settings: { ...snapshot().settings, apiKeySet: false } })
+  await byText(gated.m, 'button', '选择已保存音色').props.onClick()
+  assert.equal(byText(gated.m, 'button', '获取音色列表').props.disabled, true)
+  gated.m.restore()
+})
+
+test('preview sends one revision-checked request, renders returned engine, and never auto-bills', async () => {
   let finish
-  const gate = new Promise(r => (finish = r)); const calls = []
-  const m = mount({ settings: { apiKey: '', voiceId: 'voc_saved' }, draft: { apiKey: 'unsaved', voiceId: 'voc_unsaved' }, call: async (path, body) => { calls.push({ path, body }); await gate; return { ok: false, message: 'service busy' } } })
-  const button = node(m, x => x.type === 'Btn' && x.children.includes('Breeze 直连试听（计费）'))
-  const first = button.props.onClick(), second = button.props.onClick()
-  assert.equal(calls.length, 1); assert.deepEqual(Object.keys(calls[0].body), ['text'])
-  finish(); await Promise.all([first, second])
-  assert.equal(node(m, x => x.props.role === 'alert').children[0], 'service busy')
+  const gate = new Promise(resolve => { finish = resolve })
+  const calls = []
+  const m = mount(async (path, body) => {
+    calls.push({ path, body })
+    if (path === '/console/status') return snapshot()
+    if (path === '/console/test') { await gate; return { ok: true, engine: 'breezeblue', mime: 'audio/wav', data: Buffer.from('RIFFxxxx').toString('base64') } }
+    return { ok: true }
+  })
+  m.render(); await flush(); m.render()
+  assert.equal(calls.filter(c => c.path === '/console/test').length, 0)
+  assert.equal(field(m, '试听文本').props.value, '你好，今天也要照顾好自己。')
+  const button = byText(m, 'button', '生成试听')
+  const first = button.props.onClick()
+  const second = button.props.onClick()
+  await flush()
+  assert.equal(calls.filter(c => c.path === '/console/test').length, 1)
+  assert.deepEqual(calls.find(c => c.path === '/console/test').body, { revision: 'rev-1', text: '你好，今天也要照顾好自己。' })
+  finish(); await Promise.all([first, second]); await flush(); m.render()
+  assert.equal(m.find(x => x.type === 'audio').props.src.startsWith('blob:'), true)
+  const engineHint = m.find(x => x.props.className === 'vp-hint' && typeof x.children[0] === 'string' && x.children[0].startsWith('本次实际引擎'))
+  assert.match(engineHint.children[0], /breezeblue/)
+  assert.ok(m.toasts.some(x => x.includes('合成成功')))
+  m.restore()
 })
-test('blank or overlong preview disabled; no automatic generation when panel mounts', () => {
-  let calls = 0
-  const m = mount({ call: async () => { calls++; return { ok: true } } })
-  node(m, x => x.props['aria-label'] === 'Breeze 试听文本').props.onChange({ target: { value: '字'.repeat(201) } })
-  assert.equal(node(m, x => x.type === 'Btn' && x.children.includes('Breeze 直连试听（计费）')).props.disabled, true)
-  assert.equal(calls, 0)
+
+test('failed preview surfaces the error without clearing the draft text', async () => {
+  const m = mount(async (path, body) => {
+    if (path === '/console/status') return snapshot()
+    if (path === '/console/test') return { ok: false, message: 'service busy' }
+    return { ok: true }
+  })
+  m.render(); await flush(); m.render()
+  field(m, '试听文本').props.onChange({ target: { value: '只合成这一次。' } })
+  await byText(m, 'button', '生成试听').props.onClick()
+  await flush(); m.render()
+  assert.equal(m.find(x => x.props.role === 'alert').children[0], 'service busy')
+  assert.equal(field(m, '试听文本').props.value, '只合成这一次。')
+  m.restore()
+})
+
+test('failed save surfaces the conflict and keeps the local draft', async () => {
+  const m = mount(async (path, body) => {
+    if (path === '/console/status') return snapshot()
+    if (path === '/console/save') return { ok: false, message: '配置已在其他页面变更。请刷新后重新编辑，避免覆盖。' }
+    return { ok: true }
+  })
+  m.render(); await flush(); m.render()
+  field(m, '语速倍率').props.onChange({ target: { value: '0.7' } })
+  await byText(m, 'button', '保存配置').props.onClick()
+  await flush(); m.render()
+  assert.match(m.find(x => x.props.role === 'alert').children[0], /配置已在其他页面变更/)
+  assert.equal(byText(m, 'button', '保存配置').props.disabled, false)
+  assert.match(m.find(x => x.props['aria-live'] === 'polite').children[0], /未保存/)
+  assert.equal(field(m, '语速倍率').props.value, 0.7)
+  m.restore()
+})
+
+test('overlong preview text is disabled before any request', async () => {
+  const { m, calls } = await mounted()
+  field(m, '试听文本').props.onChange({ target: { value: '字'.repeat(201) } })
+  assert.equal(byText(m, 'button', '生成试听').props.disabled, true)
+  assert.equal(calls.filter(c => c.path === '/console/test').length, 0)
+  m.restore()
 })
