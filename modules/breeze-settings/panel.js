@@ -22,6 +22,7 @@ return function VoicePlusPanel({ toast, reload }) {
   const [error, setError] = useState('')
   const [text, setText] = useState('你好，今天也要照顾好自己。')
   const [audio, setAudio] = useState(null)
+  const [fallbackInfo, setFallbackInfo] = useState(null)
   const [voices, setVoices] = useState([])
   const [picker, setPicker] = useState(false)
   const [type, setType] = useState('personal')
@@ -39,12 +40,19 @@ return function VoicePlusPanel({ toast, reload }) {
     if (audioUrl.current) { URL.revokeObjectURL(audioUrl.current); audioUrl.current = '' }
     setAudio(null)
   }
+  // Chat-path fallbacks are silent; the voice module remembers the last one, we just mirror it.
+  const refreshFallback = () => {
+    call('/breeze/status').then(r => {
+      if (!live.current || !r || r.ok === false || !r.lastFallback) return
+      setFallbackInfo(previous => (previous && previous.at === r.lastFallback.at ? previous : r.lastFallback))
+    }).catch(() => {})
+  }
 
   useEffect(() => {
     live.current = true
     const refresh = () => {
       if (locked.current || dirtyRef.current) return
-      call('/console/status').then(r => { if (!live.current || locked.current || dirtyRef.current) return; if (r.ok === false) setError(r.message); else setSnapshot(r) }).catch(() => { if (live.current) setError('读不到控制台，请确认配套模块已启用。') })
+      call('/console/status').then(r => { if (!live.current || locked.current || dirtyRef.current) return; if (r.ok === false) setError(r.message); else { setSnapshot(r); if (r.actualMode === 'enhanced') refreshFallback() } }).catch(() => { if (live.current) setError('读不到控制台，请确认配套模块已启用。') })
     }
     refresh()
     const timer = setInterval(refresh, 5000)
@@ -83,7 +91,7 @@ return function VoicePlusPanel({ toast, reload }) {
     const r = await checked('/console/mode', { revision: snapshot.revision, mode })
     if (live.current) { replace(r); toast?.(r.actualMode === mode ? '已切换为' + modeNames[mode] : '期望模式与实际运行不一致，请查看提示'); reload?.() }
   })
-  const refresh = () => action('refresh', async () => { const r = await checked('/console/status'); if (live.current) replace(r) })
+  const refresh = () => action('refresh', async () => { const r = await checked('/console/status'); if (live.current) { replace(r); if (r.actualMode === 'enhanced') refreshFallback() } })
   const loadVoices = more => action('voices', async () => {
     const r = await checked('/breeze/voices', { type, search, page: more ? pageInfo.page + 1 : 1, pageToken: more ? pageInfo.nextPageToken : '' })
     if (live.current) { setVoices(old => [...new Map([...(more ? old : []), ...(r.voices || [])].map(v => [v.voiceId, v])).values()]); setPageInfo(r); setPicker(true) }
@@ -154,6 +162,7 @@ return function VoicePlusPanel({ toast, reload }) {
       h('aside', { className: 'vp-side' }, h('section', { className: 'vp-card' }, h('h3', null, '听听现在的声音'), h('p', { className: 'vp-sub' }, '使用已保存配置，与聊天的实际调用路径一致。'),
         h('div', { className: 'vp-info' }, h('span', null, '运行版本'), h('span', null, modeNames[snapshot.actualMode])), h('div', { className: 'vp-info' }, h('span', null, '生效引擎'), h('span', null, snapshot.actualMode === 'off' ? '未启用' : snapshot.actualMode === 'enhanced' && snapshot.settings.provider === 'breezeblue' ? '远程 Breeze' : engines.find(x => x[0] === snapshot.original.engine)?.[1] || '原有引擎')),
         snapshot.localTtsActive ? h('p', { className: 'vp-note warn', style: { marginTop: 12 } }, '本地 TTS 接口正在接管，优先于这里的引擎。要走 Breeze，请到「本地接口」关闭 TTS 接管。') : null,
+        fallbackInfo && snapshot.actualMode === 'enhanced' ? h('p', { className: 'vp-note warn', style: { marginTop: 12 } }, '上次远程语音回退：' + new Date(fallbackInfo.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) + ' · ' + fallbackInfo.reason + '。聊天路径静默回退，可关闭回退开关查看真实错误。') : null,
         snapshot.rvcVoice ? h('p', { className: 'vp-hint' }, 'RVC 后处理：' + snapshot.rvcVoice + '。听 Breeze 原声请在原语音页取消 RVC。') : null,
         h('div', { className: 'vp-preview' }, field('试听文本', text, setText, { area: true, hint: '最多200字符；远程合成会计费，不自动重试。' }), btn(busy === 'test' ? '合成中，请稍候…' : '生成试听', preview, { className: 'vp-btn primary', style: { marginTop: 12, width: '100%' }, disabled: Boolean(busy) || dirty || snapshot.actualMode === 'off' || !text.trim() || Array.from(text).length > 200 })),
         audio ? h('div', { className: 'vp-preview' }, h('audio', { controls: true, src: audio.url }), h('p', { className: 'vp-hint' }, '本次实际引擎：' + audio.engine), h('a', { href: audio.url, download: 'voice-preview.' + (audio.mime === 'audio/wav' ? 'wav' : audio.mime === 'audio/ogg' ? 'ogg' : 'mp3') }, '下载试听')) : null),

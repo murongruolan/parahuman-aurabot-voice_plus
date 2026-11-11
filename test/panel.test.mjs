@@ -70,13 +70,13 @@ test('panel compiles and mounts with actual mode, no paid or speak call, remount
   assert.equal(m.render().type, 'div')
   assert.equal(m.find(x => x.type === 'h2').children[0], '让每句话，有自己的声音')
   assert.equal(m.find(x => x.props.role === 'status').children[0], '当前：增强语音')
-  assert.deepEqual(calls.map(c => c.path), ['/console/status'])
+  assert.deepEqual(calls.map(c => c.path), ['/console/status', '/breeze/status'])
   assert.ok(m.timers.size === 1)
   assert.ok(m.listeners.has('beforeunload'))
   const timer = [...m.timers.values()][0]
   timer()
   await flush()
-  assert.deepEqual(calls.map(c => c.path), ['/console/status', '/console/status'])
+  assert.deepEqual(calls.map(c => c.path), ['/console/status', '/breeze/status', '/console/status', '/breeze/status'])
   m.cleanup()
   assert.equal(m.timers.size, 0)
   assert.equal(m.listeners.has('beforeunload'), false)
@@ -260,5 +260,33 @@ test('overlong preview text is disabled before any request', async () => {
   field(m, '试听文本').props.onChange({ target: { value: '字'.repeat(201) } })
   assert.equal(byText(m, 'button', '生成试听').props.disabled, true)
   assert.equal(calls.filter(c => c.path === '/console/test').length, 0)
+  m.restore()
+})
+
+test('console mirrors the last chat fallback from the voice module', async () => {
+  const calls = []
+  const at = 1763371657000
+  const m = mount(async (path, body) => {
+    calls.push({ path, body })
+    if (path === '/console/status') return snapshot()
+    if (path === '/breeze/status') return { ok: true, lastFallback: { at, reason: '无法连接 Breeze 官方 API，请检查网络或代理。' } }
+    return { ok: true }
+  })
+  m.render(); await flush(); m.render()
+  assert.deepEqual(calls.map(c => c.path), ['/console/status', '/breeze/status'])
+  const note = m.find(x => x.props.className === 'vp-note warn' && typeof x.children[0] === 'string' && x.children[0].startsWith('上次远程语音回退'))
+  assert.match(note.children[0], /无法连接/)
+  m.restore()
+})
+
+test('official mode does not query the voice status route', async () => {
+  const calls = []
+  const m = mount(async path => {
+    calls.push(path)
+    if (path === '/console/status') return snapshot({ requestedMode: 'official', actualMode: 'official' })
+    return { ok: true }
+  })
+  m.render(); await flush(); m.render()
+  assert.deepEqual(calls, ['/console/status'])
   m.restore()
 })

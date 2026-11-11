@@ -16,7 +16,7 @@ const { fileOf } = __lib('local/local.js')
 export default {
   id: 'voice',
   name: '语音 · BreezeBlue 扩展',
-  version: '1.1.0',
+  version: '1.1.1',
   api: 1,
   description: '基于内置语音模块的用户副本：新增 BreezeBlue，保留原引擎、本地接口、RVC 与 ASR。',
   // Host 1.2.0 hides UI on same-name replacements. The companion breeze-settings module owns it.
@@ -28,6 +28,8 @@ export default {
     const settings = () => api.has('breeze-settings') ? { ...DEFAULTS, ...api.config().ext?.['breeze-settings'] } : { ...DEFAULTS }
     const safeMessage = error => redact(error?.message || error, settings().apiKey)
     const access = (req, method) => panelAccessError(req, method, api.config().security)
+    // Chat-path fallbacks are silent by design; remember the last one so the console can show it.
+    let lastFallback = null
 
     async function breezeSpeech(text, config) {
       const result = await breeze.synthesize(text, config, api.dataDir('breezeblue-cache'))
@@ -54,6 +56,7 @@ export default {
       if (config.provider === 'breezeblue') {
         try { return await breezeSpeech(text, config) } catch (error) {
           if (lifetime.signal.aborted || error?.code === 'ABORTED' || config.fallback !== true) throw error
+          lastFallback = { at: Date.now(), reason: String(safeMessage(error)).slice(0, 120) }
           api.log.warn('BreezeBlue 失败：', safeMessage(error), '→ 回退原语音引擎（未重复请求 Breeze）')
         }
       }
@@ -143,6 +146,7 @@ export default {
       return { ok: true, provider: config.provider, configured: valid,
         keySet: Boolean(config.apiKey), voiceId: config.voiceId || '',
         localTtsActive: Boolean(local.active('tts')), voiceEnabled: api.config().voice?.enabled !== false,
+        lastFallback,
         message }
     })
     api.route('/ext/breeze-settings/breeze/voices', async req => {

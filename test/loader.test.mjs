@@ -159,6 +159,15 @@ test('Breeze failure falls back once to configured old engine, sanitized log', a
   assert.equal(remoteRequests.length, 1); assert.equal(oldRequests.length, 1)
   assert.ok(!logs.join('\n').includes(cfg.ext['breeze-settings'].apiKey)); assert.ok(logs.some(x => x.includes('回退')))
 })
+test('network-level Breeze failure falls back and is remembered for the console status', async () => {
+  reset(); remote = () => { throw new TypeError('boom') }
+  assert.equal((await mods.use('voice').speak('网络抖动')).engine, 'http')
+  assert.equal(remoteRequests.length, 1); assert.equal(oldRequests.length, 1)
+  const status = await route('/ext/breeze-settings/breeze/status')
+  assert.ok(status.lastFallback); assert.equal(typeof status.lastFallback.at, 'number')
+  assert.ok(Date.now() - status.lastFallback.at < 60000); assert.match(status.lastFallback.reason, /无法连接/)
+  assert.ok(!JSON.stringify(status.lastFallback).includes(cfg.ext['breeze-settings'].apiKey))
+})
 test('strict mode throws instead of silently changing voice', async () => {
   reset(); cfg.ext['breeze-settings'].fallback = false; remote = () => new Response('{}', { status: 429 })
   await assert.rejects(mods.use('voice').speak('不回退'), e => e.status === 429)

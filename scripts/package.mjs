@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const name = 'aurabot-breezeblue-voice-1.1.0'
+const name = 'aurabot-breezeblue-voice-1.1.1'
 const dist = join(root, 'dist'), release = join(dist, name)
 mkdirSync(dist, { recursive: true })
 // Regeneration is deliberately refused. Inspect an older output before moving it aside.
@@ -23,7 +23,7 @@ assert.equal(browser.status, 'passed')
 const verification = JSON.parse(readFileSync(join(root, 'artifacts/verification.json'), 'utf8'))
 assert.equal(verification.originalClean, true)
 const sha = data => createHash('sha256').update(data).digest('hex')
-const manifest = { id: 'aurabot-breezeblue-voice', version: '1.1.0', baseCommit: verification.sourceCommit, modules: [] }
+const manifest = { id: 'aurabot-breezeblue-voice', version: '1.1.1', baseCommit: verification.sourceCommit, modules: [] }
 const inspectText = (buf, path) => {
   if (/brz_[A-Za-z0-9_-]{12,}/.test(buf.toString('utf8'))) throw new Error('Possible credential in release input: ' + path)
 }
