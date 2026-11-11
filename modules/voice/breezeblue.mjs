@@ -10,6 +10,10 @@ export const DEFAULTS = Object.freeze({
   languageCode: '', instructions: '', guidanceScale: 1, speed: 1, volume: 1,
   speakerBoost: false, outputFormat: 'wav', timeoutSeconds: 300, fallback: true,
   retryCount: 2, retryDelaySeconds: 1,
+  emotion: Object.freeze({
+    endpoints: [], templates: [],
+    routing: Object.freeze({ calm: 'breezeblue', playful: 'breezeblue', down: 'breezeblue', angry: 'breezeblue', excited: 'breezeblue', proud: 'breezeblue', whiny: 'breezeblue', lazy: 'breezeblue' }),
+  }),
 })
 const MAX_AUDIO_BYTES = 32 * 1024 * 1024
 const MAX_JSON_BYTES = 2 * 1024 * 1024

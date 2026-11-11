@@ -6,13 +6,13 @@ import { spawnSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const name = 'aurabot-breezeblue-voice-1.2.0'
+const name = 'aurabot-breezeblue-voice-1.3.0'
 const dist = join(root, 'dist'), release = join(dist, name)
 mkdirSync(dist, { recursive: true })
 // Regeneration is deliberately refused. Inspect an older output before moving it aside.
 assert.ok(!existsSync(release) && !existsSync(release + '.zip'), 'Release already exists; inspect before replacing it.')
 const moduleFiles = {
-  voice: ['index.mjs', 'tts.js', 'rvc.js', 'breezeblue.mjs', 'access.mjs', 'package.json', 'module.json', 'README.md', 'LICENSE'],
+  voice: ['index.mjs', 'tts.js', 'rvc.js', 'breezeblue.mjs', 'emotion.mjs', 'access.mjs', 'package.json', 'module.json', 'README.md', 'LICENSE'],
   'breeze-settings': ['index.mjs', 'settings.mjs', 'panel.js', 'access.mjs', 'control.mjs', 'package.json', 'module.json', 'README.md', 'LICENSE'],
 }
 const moduleLog = readFileSync(join(root, 'artifacts/module-test.log'), 'utf8')
@@ -23,7 +23,7 @@ assert.equal(browser.status, 'passed')
 const verification = JSON.parse(readFileSync(join(root, 'artifacts/verification.json'), 'utf8'))
 assert.equal(verification.originalClean, true)
 const sha = data => createHash('sha256').update(data).digest('hex')
-const manifest = { id: 'aurabot-breezeblue-voice', version: '1.2.0', baseCommit: verification.sourceCommit, modules: [] }
+const manifest = { id: 'aurabot-breezeblue-voice', version: '1.3.0', baseCommit: verification.sourceCommit, modules: [] }
 const inspectText = (buf, path) => {
   if (/brz_[A-Za-z0-9_-]{12,}/.test(buf.toString('utf8'))) throw new Error('Possible credential in release input: ' + path)
 }

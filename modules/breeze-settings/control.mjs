@@ -12,6 +12,9 @@ const GROUPS = {
   gptsovits: { text: { url: 2048, refAudio: 4096, promptText: 4000, textLang: 20, promptLang: 20 } },
   http: { text: { urlTemplate: 4096, headers: 16000, body: 16000 }, numbers: { sampleRate: [8000, 96000] }, enums: { method: ['GET', 'POST'] } },
 }
+const EMOTION_KEYS = ['calm', 'playful', 'down', 'angry', 'excited', 'proud', 'whiny', 'lazy']
+const EMOTION_LEGS = ['breezeblue', 'builtin']
+const DEFAULT_EMOTION_ROUTING = Object.fromEntries(EMOTION_KEYS.map(key => [key, 'breezeblue']))
 const object = v => v && typeof v === 'object' && !Array.isArray(v)
 function fail(message) { throw new Error(message) }
 function string(v, max, key) {
@@ -23,6 +26,64 @@ function number(v, range, key) {
   return v
 }
 function choice(v, allowed, key) { if (!allowed.includes(v)) fail(`${key} 选项无效。`); return v }
+
+function emotionRouting(raw, current, endpointIds) {
+  const out = { ...current }
+  for (const [key, value] of Object.entries(object(raw) ? raw : fail('情绪路由格式无效。'))) {
+    if (!EMOTION_KEYS.includes(key)) fail('不支持的情绪键：' + key)
+    out[key] = choice(value, [...EMOTION_LEGS, ...endpointIds], '情绪路由')
+  }
+  return out
+}
+function emotionEndpoint(raw, current, id) {
+  if (!object(raw)) fail('情绪端点格式无效。')
+  const name = string(raw.name, 24, '端点名称')
+  if (!name) fail('端点名称不能为空。')
+  const method = choice(raw.method || 'GET', ['GET', 'POST'], '端点方式')
+  const urlTemplate = string(raw.urlTemplate, 2048, '端点地址')
+  if (!/^https?:\/\//.test(urlTemplate)) fail('端点地址需以 http(s):// 开头。')
+  const body = raw.body === undefined ? (current?.body ?? '') : string(raw.body, 16000, '端点请求体')
+  const headers = raw.headers === undefined || raw.headers === '' ? (current?.headers ?? '') : raw.headers === null ? '' : string(raw.headers, 16000, '端点请求头')
+  return { id, name, method, urlTemplate, body, headers }
+}
+export function emotionPatch(raw, current) {
+  const base = { routing: {}, endpoints: [], templates: [], ...(object(current) ? current : {}) }
+  const endpoints = []
+  const ids = new Set()
+  const rawEndpoints = object(raw) ? raw.endpoints : base.endpoints
+  const items = Array.isArray(rawEndpoints) ? rawEndpoints : base.endpoints
+  for (const item of items) {
+    const id = typeof item?.id === 'string' && /^e[0-9]{1,3}$/.test(item.id) ? item.id : 'e' + (endpoints.length + 1)
+    if (ids.has(id)) fail('端点序号重复。')
+    ids.add(id)
+    endpoints.push(emotionEndpoint(item, base.endpoints.find(e => e.id === id), id))
+  }
+  if (endpoints.length > 12) fail('情绪端点最多 12 个。')
+  const names = new Set()
+  for (const e of endpoints) { if (names.has(e.name)) fail('端点名称重复。'); names.add(e.name) }
+  const endpointIds = endpoints.map(e => e.id)
+  const routing = emotionRouting(object(raw) ? object(raw.routing) ? raw.routing : base.routing : base.routing, base.routing, endpointIds)
+  const templates = []
+  const rawTemplates = object(raw) ? raw.templates : base.templates
+  const tpls = Array.isArray(rawTemplates) ? rawTemplates : base.templates
+  for (const t of tpls) {
+    const name = string(t?.name, 24, '模板名称')
+    if (!name) fail('模板名称不能为空。')
+    templates.push({ name, routing: emotionRouting(t.routing || {}, DEFAULT_EMOTION_ROUTING, endpointIds) })
+  }
+  if (templates.length > 10) fail('情绪模板最多 10 个。')
+  return { endpoints, routing, templates }
+}
+function maskedEmotion(ext) {
+  const emo = object(ext?.emotion) ? ext.emotion : {}
+  const epList = Array.isArray(emo.endpoints) ? emo.endpoints : []
+  const tplList = Array.isArray(emo.templates) ? emo.templates : []
+  return {
+    routing: { ...DEFAULT_EMOTION_ROUTING, ...(object(emo.routing) ? emo.routing : {}) },
+    endpoints: epList.filter(object).map(e => ({ ...e, headers: '', headersSet: Boolean(e.headers) })),
+    templates: tplList.filter(object),
+  }
+}
 
 export function extensionPatch(raw, current) {
   if (!object(raw)) fail('设置格式无效。')
@@ -42,8 +103,9 @@ export function extensionPatch(raw, current) {
       const retries = number(value, [0, 5], key)
       if (!Number.isInteger(retries)) fail('重试次数必须是 0–5 的整数。')
       patch[key] = retries
-    } else if (key === 'provider') patch[key] = choice(value, ['builtin', 'breezeblue'], key)
+    } else if (key === 'provider') patch[key] = choice(value, ['builtin', 'breezeblue', 'emotion'], key)
     else if (key === 'outputFormat') patch[key] = choice(value, ['wav', 'wav_24000', 'mp3', 'mp3_24000_64', 'mp3_24000_96', 'mp3_24000_128', 'mp3_24000_160'], key)
+    else if (key === 'emotion') patch[key] = emotionPatch(value, current?.emotion)
     else if (key === 'speakerBoost' || key === 'fallback') {
       if (typeof value !== 'boolean') fail(`${key} 必须是开关值。`)
       patch[key] = value
@@ -113,7 +175,7 @@ export function consoleState(api) {
   return { ok: true, revision: revision(cfg), requestedMode: desired, actualMode: actual, running,
     fallback: Boolean(rec?.fallback), safeMode: Boolean(cfg.safeMode),
     moduleError: typeof rec?.error === 'string' ? rec.error.replace(/brz_[A-Za-z0-9_-]+/g, '[已隐藏]').slice(0, 220) : '',
-    settings: { ...ext, apiKey: '', apiKeySet: Boolean(ext.apiKey) }, original,
+    settings: { ...ext, apiKey: '', apiKeySet: Boolean(ext.apiKey), emotion: maskedEmotion(ext) }, original,
     localTtsActive: Boolean(api.core.local?.active?.('tts')),
     rvcVoice: voice.songVoice || '',
     enhancedAvailable: Boolean(rec?.hasUser),

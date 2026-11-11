@@ -201,6 +201,31 @@ test('retryCount 0 disables connection retry', async () => {
   assert.equal((await mods.use('voice').speak('零重试')).engine, 'http')
   assert.equal(remoteRequests.length, 1)
 })
+test('emotion provider routes per emotion and sends dynamic instructions with native tags', async () => {
+  reset(); cfg.ext['breeze-settings'].provider = 'emotion'
+  cfg.ext['breeze-settings'].emotion = { endpoints: [{ id: 'e1', name: '自训练', method: 'GET', urlTemplate: base + '/emo?text={text}&emotion={emotion}', body: '', headers: '' }], routing: { calm: 'e1' }, templates: [] }
+  const r1 = await mods.use('voice').speak('[calm:M]你好')
+  assert.equal(r1.engine, '自训练'); assert.match(lastUrl(), /emotion=calm/)
+  const r2 = await mods.use('voice').speak('[excited:H]冲啊[laugh]')
+  assert.equal(r2.engine, 'breezeblue')
+  const body = JSON.parse(remoteRequests.at(-1)?.body || '{}')
+  assert.equal(body.text, '冲啊 [笑]'); assert.match(body.instructions, /兴奋/); assert.equal(body.voice_settings.speed, 1.15)
+})
+test('emotion leg falls through endpoint failure to the Breeze leg', async () => {
+  reset(); cfg.ext['breeze-settings'].provider = 'emotion'; cfg.ext['breeze-settings'].retryCount = 0
+  cfg.ext['breeze-settings'].emotion = { endpoints: [{ id: 'e9', name: '挂了', method: 'GET', urlTemplate: 'http://127.0.0.1:1/x?text={text}', body: '', headers: '' }], routing: { calm: 'e9' }, templates: [] }
+  const r = await mods.use('voice').speak('平静的一句话')
+  assert.equal(r.engine, 'breezeblue')
+  assert.ok(logs.some(x => x.includes('换下一条腿')))
+})
+test('emotion markers are stripped on the builtin provider', async () => {
+  reset(); cfg.ext['breeze-settings'].provider = 'builtin'
+  const r = await mods.use('voice').speak('[calm]你好')
+  assert.equal(r.engine, 'http')
+  const url = decodeURIComponent(oldRequests.at(-1).url)
+  assert.match(url, /你好/); assert.doesNotMatch(url, /calm/)
+})
+function lastUrl() { return remoteRequests.at(-1)?.url || oldRequests.at(-1)?.url || '' }
 test('strict mode throws instead of silently changing voice', async () => {
   reset(); cfg.ext['breeze-settings'].fallback = false; remote = () => new Response('{}', { status: 429 })
   await assert.rejects(mods.use('voice').speak('不回退'), e => e.status === 429)

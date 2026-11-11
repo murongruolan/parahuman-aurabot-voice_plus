@@ -2,6 +2,12 @@
 const { useState, useEffect, useRef } = React
 const modeNames = { enhanced: '增强语音', official: '官方语音', off: '关闭语音' }
 const engines = [['auto', '自动（edge / Windows）'], ['edge', '微软 edge-tts'], ['windows', 'Windows 自带'], ['cosyvoice', '本地 CosyVoice'], ['gptsovits', '本地 GPT-SoVITS'], ['http', '其他 HTTP 接口']]
+const EMOTION_LIST = [['calm', '平静'], ['playful', '俏皮'], ['down', '失落'], ['angry', '生气'], ['excited', '兴奋'], ['proud', '得意'], ['whiny', '娇嗔'], ['lazy', '慵懒']]
+const DEFAULT_ROUTING = { calm: 'breezeblue', playful: 'breezeblue', down: 'breezeblue', angry: 'breezeblue', excited: 'breezeblue', proud: 'breezeblue', whiny: 'breezeblue', lazy: 'breezeblue' }
+const canonEndpoint = x => ({ id: x?.id, name: x?.name || '', method: x?.method || 'GET', urlTemplate: x?.urlTemplate || '', body: x?.body || '', headers: x?.headers || '' })
+const emoOf = r => ({ routing: { ...DEFAULT_ROUTING, ...((r?.emotion || {}).routing || {}) },
+  endpoints: ((r?.emotion || {}).endpoints || []).map(canonEndpoint),
+  templates: ((r?.emotion || {}).templates || []).map(t => ({ name: t?.name || '', routing: { ...DEFAULT_ROUTING, ...(t.routing || {}) } })) })
 const css = `
 .vp{--vp-line:var(--ab-line,#dce3eb);--vp-card:var(--ab-card,#fff);--vp-text:var(--ab-text,#253247);--vp-muted:var(--ab-muted,#69768a);--vp-accent:#317096;color:var(--vp-text);grid-column:1/-1;max-width:1160px;width:100%;margin:0 auto;font-size:14px;line-height:1.55}
 .vp *{box-sizing:border-box}.vp h2,.vp h3,.vp p{margin:0}.vp button,.vp input,.vp textarea,.vp select{font:inherit}.vp button{cursor:pointer}.vp button:disabled{opacity:.48;cursor:not-allowed}.vp :focus-visible{outline:3px solid #4b9bc5;outline-offset:3px}
@@ -23,13 +29,16 @@ return function VoicePlusPanel({ toast, reload }) {
   const [text, setText] = useState('你好，今天也要照顾好自己。')
   const [audio, setAudio] = useState(null)
   const [fallbackInfo, setFallbackInfo] = useState(null)
+  const [emoDraft, setEmoDraft] = useState(null)
+  const [templateName, setTemplateName] = useState('')
   const [voices, setVoices] = useState([])
   const [picker, setPicker] = useState(false)
   const [type, setType] = useState('personal')
   const [search, setSearch] = useState('')
   const [pageInfo, setPageInfo] = useState({ page: 1, nextPageToken: '', hasMore: false })
   const live = useRef(false), locked = useRef(false), dirtyRef = useRef(false), audioUrl = useRef('')
-  const dirty = Object.keys(edits).length > 0 || Object.keys(originalEdits).length > 0
+  const emotionDirty = Boolean(emoDraft && snapshot && JSON.stringify(emoDraft) !== JSON.stringify(emoOf(snapshot.settings)))
+  const dirty = Object.keys(edits).length > 0 || Object.keys(originalEdits).length > 0 || emotionDirty
   dirtyRef.current = dirty
   const config = { ...(snapshot?.settings || {}), ...edits }
   const original = { ...(snapshot?.original || {}), ...originalEdits }
@@ -37,6 +46,7 @@ return function VoicePlusPanel({ toast, reload }) {
   const provider = snapshot?.actualMode === 'official' ? 'builtin' : config.provider || 'builtin'
   const replace = r => {
     setSnapshot(r); setEdits({}); setOriginalEdits({})
+    setEmoDraft(emoOf(r.settings))
     if (audioUrl.current) { URL.revokeObjectURL(audioUrl.current); audioUrl.current = '' }
     setAudio(null)
   }
@@ -52,7 +62,7 @@ return function VoicePlusPanel({ toast, reload }) {
     live.current = true
     const refresh = () => {
       if (locked.current || dirtyRef.current) return
-      call('/console/status').then(r => { if (!live.current || locked.current || dirtyRef.current) return; if (r.ok === false) setError(r.message); else { setSnapshot(r); if (r.actualMode === 'enhanced') refreshFallback() } }).catch(() => { if (live.current) setError('读不到控制台，请确认配套模块已启用。') })
+      call('/console/status').then(r => { if (!live.current || locked.current || dirtyRef.current) return; if (r.ok === false) setError(r.message); else { setSnapshot(r); setEmoDraft(emoOf(r.settings)); if (r.actualMode === 'enhanced') refreshFallback() } }).catch(() => { if (live.current) setError('读不到控制台，请确认配套模块已启用。') })
     }
     refresh()
     const timer = setInterval(refresh, 5000)
@@ -83,7 +93,9 @@ return function VoicePlusPanel({ toast, reload }) {
   }
   async function checked(path, body) { const r = await call(path, body); if (r.ok === false) throw new Error(r.message || '操作未完成'); return r }
   const saveAll = () => action('save', async () => {
-    const r = await checked('/console/save', { revision: snapshot.revision, settings: edits, original: originalEdits })
+    const settings = { ...edits }
+    if (emotionDirty) settings.emotion = emoDraft
+    const r = await checked('/console/save', { revision: snapshot.revision, settings, original: originalEdits })
     if (live.current) { replace(r); toast?.('语音设置已保存'); reload?.() }
   })
   const setMode = mode => action('mode', async () => {
@@ -112,6 +124,45 @@ return function VoicePlusPanel({ toast, reload }) {
       onChange: e => onChange?.(options.type === 'number' ? e.target.value === '' ? '' : Number(e.target.value) : e.target.value) }), options.hint ? h('small', { className: 'vp-hint' }, options.hint) : null)
   const select = (label, value, onChange, options) => h('label', { className: 'vp-field' }, h('span', null, label), h('select', { className: 'vp-input', 'aria-label': label, value: value ?? '', disabled: Boolean(busy), onChange: e => onChange(e.target.value) }, options.map(o => h('option', { key: Array.isArray(o) ? o[0] : o, value: Array.isArray(o) ? o[0] : o }, Array.isArray(o) ? o[1] : o))))
   const toggle = (label, key) => h('label', { className: 'vp-toggle' }, h('input', { type: 'checkbox', checked: Boolean(config[key]), disabled: Boolean(busy), onChange: e => update(key, e.target.checked) }), label)
+  const patchEndpoint = (id, patch) => setEmoDraft(d => ({ ...d, endpoints: d.endpoints.map(e => (e.id === id ? canonEndpoint({ ...e, ...patch }) : e)) }))
+  const removeEndpoint = id => setEmoDraft(d => ({ ...d, endpoints: d.endpoints.filter(e => e.id !== id), routing: Object.fromEntries(Object.entries(d.routing).map(([k, v]) => [k, v === id ? 'breezeblue' : v])) }))
+  const addEndpoint = () => setEmoDraft(d => {
+    let n = d.endpoints.length
+    while (n < 999 && d.endpoints.some(e => e.id === 'e' + (n + 1))) n++
+    return { ...d, endpoints: [...d.endpoints, canonEndpoint({ id: 'e' + (n + 1), name: '新端点 ' + (n + 1) })] }
+  })
+  const patchRouting = (key, value) => setEmoDraft(d => ({ ...d, routing: { ...d.routing, [key]: value } }))
+  const saveTemplate = () => setEmoDraft(d => {
+    const name = templateName.trim()
+    if (!name) return d
+    return { ...d, templates: [...d.templates.filter(t => t.name !== name), { name, routing: { ...d.routing } }] }
+  })
+  const applyTemplate = t => setEmoDraft(d => ({ ...d, routing: { ...t.routing } }))
+  const removeTemplate = name => setEmoDraft(d => ({ ...d, templates: d.templates.filter(t => t.name !== name) }))
+  const epHeadersSet = id => Boolean((snapshot?.settings?.emotion?.endpoints || []).find(x => x.id === id)?.headersSet)
+  const legOptions = [['breezeblue', '远程 Breeze'], ['builtin', '原有引擎'], ...(emoDraft?.endpoints || []).map(e => [e.id, e.name])]
+  const emotionTab = () => h('div', { role: 'tabpanel', 'aria-label': '情绪引擎配置' },
+    h('div', { className: 'vp-card' }, h('h3', null, '标签写法'), h('ul', { className: 'vp-guide' },
+      h('li', null, '模型在 <voice>…</voice> 里写标记：<voice>[excited:H]今天运气真好！[laugh]</voice>（方括号会被剥掉，不念出来）。'),
+      h('li', null, '强度/风格可省略：<voice>[down:L]对不起…[cry]</voice>；无标记默认「平静 · 中唤醒 · 无风格」。'),
+      h('li', null, '强度：L 低唤醒（气声/慢/停顿长）· M 中唤醒 · H 高唤醒（快/高能量）。风格：whisper 气声、cry 哭腔、laugh 笑腔、tremble 颤音、drawl 拖腔、growl 狠厉、coquettish 撒娇、sigh 叹气，中文别名也认。'),
+      h('li', null, '情绪/风格会对 Breeze 腿换算成表演指令与语速；原有引擎腿只剔除标记、原样合成。'))),
+    h('div', { className: 'vp-card' }, h('h3', null, '情绪端点'),
+      h('p', { className: 'vp-hint' }, '通用 HTTP 推理端点。占位符：{text} {emotion} {arousal} {styles} {reqid}。端点单次请求、不自动重试；失败按「该情绪所选端点 → 远程 Breeze → 原有引擎」降级（fallback 开关是总闸）。'),
+      (emoDraft?.endpoints || []).map(ep => h('div', { key: ep.id, style: { border: '1px solid var(--vp-line)', borderRadius: 10, padding: 12, marginTop: 10 } },
+        h('div', { className: 'vp-fields' },
+          field('端点名称', ep.name, v => patchEndpoint(ep.id, { name: v }), { placeholder: '自训练女声' }),
+          select('请求方式', ep.method, v => patchEndpoint(ep.id, { method: v }), ['GET', 'POST']),
+          field('地址模板', ep.urlTemplate, v => patchEndpoint(ep.id, { urlTemplate: v }), { wide: true, placeholder: 'http://127.0.0.1:8000/tts?text={text}&emotion={emotion}&arousal={arousal}&styles={styles}' }),
+          ep.method === 'POST' ? field('请求体模板', ep.body, v => patchEndpoint(ep.id, { body: v }), { wide: true, area: true, placeholder: '{"text":"{text}","emotion":"{emotion}","arousal":"{arousal}","styles":"{styles}"}' }) : null,
+          field('请求头', ep.headers, v => patchEndpoint(ep.id, { headers: v }), { wide: true, area: true, placeholder: epHeadersSet(ep.id) ? '已保存，留空保持；输入新内容替换' : '一行一个 Name: Value' })),
+        h('div', { className: 'vp-row', style: { marginTop: 10 } }, btn('删除端点', () => removeEndpoint(ep.id), { className: 'vp-btn small' })))),
+      h('div', { className: 'vp-row', style: { marginTop: 10 } }, btn('添加端点', addEndpoint, { className: 'vp-btn small' }))),
+    h('div', { className: 'vp-card' }, h('h3', null, '8 种核心情绪路由'),
+      h('div', { className: 'vp-fields' }, EMOTION_LIST.map(([key, zh]) => h('label', { className: 'vp-field', key }, h('span', null, zh), h('select', { className: 'vp-input', 'aria-label': '情绪路由 · ' + zh, value: (emoDraft?.routing || {})[key] || 'breezeblue', disabled: Boolean(busy), onChange: e => patchRouting(key, e.target.value) }, legOptions.map(([id, name]) => h('option', { key: id, value: id }, name))))))),
+    h('div', { className: 'vp-card' }, h('h3', null, '情绪模板'),
+      h('div', { className: 'vp-row grow', style: { marginBottom: 10 } }, field('模板名称', templateName, setTemplateName, { placeholder: '例如 全Breeze / 混合带自训练' }), btn('保存为模板', saveTemplate, { className: 'vp-btn small', disabled: !templateName.trim() })),
+      (emoDraft?.templates || []).length ? h('div', { className: 'vp-picker' }, (emoDraft?.templates || []).map(t => h('div', { className: 'vp-row', key: t.name, style: { justifyContent: 'space-between' } }, h('span', { className: 'vp-hint' }, t.name), h('div', { className: 'vp-row' }, btn('应用', () => applyTemplate(t), { className: 'vp-btn small' }), btn('删除', () => removeTemplate(t.name), { className: 'vp-btn small' }))))) : h('p', { className: 'vp-hint' }, '把当前 8 种情绪的映射保存为模板，多套方案一键切换。')))
 
   if (!snapshot) return h('div', { className: 'vp' }, h('style', null, css), h('div', { className: 'vp-card' }, h('h3', null, '增强语音'), h('p', { className: 'vp-sub' }, error || '正在读取语音设置…'), error ? btn('重新连接', refresh) : null))
   const mismatch = snapshot.requestedMode !== snapshot.actualMode
@@ -142,8 +193,8 @@ return function VoicePlusPanel({ toast, reload }) {
     mismatch || snapshot.fallback ? h('p', { className: 'vp-note warn' }, '期望模式：' + modeNames[snapshot.requestedMode] + '。当前实际运行：' + modeNames[snapshot.actualMode] + '。' + (snapshot.moduleError || '请检查「已安装」中的模块状态；官方加载失败回退机制仍然保留。')) : null,
     error ? h('div', { className: 'vp-note err', role: 'alert' }, error) : null,
     h('div', { className: 'vp-grid' }, h('section', { className: 'vp-card' },
-      snapshot.actualMode === 'official' ? h('p', { className: 'vp-note' }, '当前使用官方版。下方编辑原引擎；Breeze 参数原样保留，切回增强版即可继续使用。') : h('div', { className: 'vp-tabs', role: 'tablist', 'aria-label': '合成引擎' }, [['breezeblue', '远程 Breeze'], ['builtin', '原有引擎']].map(([id, name]) => h('button', { key: id, type: 'button', className: 'vp-tab', role: 'tab', 'aria-selected': provider === id, disabled: Boolean(busy), onClick: () => update('provider', id) }, name))),
-      provider === 'breezeblue' ? h('div', { role: 'tabpanel', 'aria-label': '远程 Breeze 配置' }, h('div', { className: 'vp-fields' },
+      snapshot.actualMode === 'official' ? h('p', { className: 'vp-note' }, '当前使用官方版。下方编辑原引擎；Breeze 参数原样保留，切回增强版即可继续使用。') : h('div', { className: 'vp-tabs', role: 'tablist', 'aria-label': '合成引擎' }, [['breezeblue', '远程 Breeze'], ['emotion', '情绪引擎'], ['builtin', '原有引擎']].map(([id, name]) => h('button', { key: id, type: 'button', className: 'vp-tab', role: 'tab', 'aria-selected': provider === id, disabled: Boolean(busy), onClick: () => update('provider', id) }, name))),
+      provider === 'emotion' ? emotionTab() : provider === 'breezeblue' ? h('div', { role: 'tabpanel', 'aria-label': '远程 Breeze 配置' }, h('div', { className: 'vp-fields' },
         field('服务地址', 'https://api.breeze.blue/v1', null, { wide: true, readOnly: true }),
         field('Breeze API Key', config.apiKey, v => update('apiKey', v), { wide: true, type: 'password', placeholder: snapshot.settings.apiKeySet ? '已保存密钥（留空不修改）' : 'brz_…', hint: '仅发送给官方 API；配置与密钥不会因切换模式而清空。' }),
         field('Voice ID', config.voiceId, v => update('voiceId', v), { wide: true, placeholder: 'voc_…' }),
@@ -162,11 +213,11 @@ return function VoicePlusPanel({ toast, reload }) {
           field('重试间隔（秒）', config.retryDelaySeconds, v => update('retryDelaySeconds', v), { type: 'number', min: 0, max: 10, step: .25 })), h('div', { className: 'vp-divider' }), toggle('增强参考音色相似度', 'speakerBoost'), toggle('Breeze 失败时回退原引擎（不重复请求 Breeze）', 'fallback'))) : h('div', { role: 'tabpanel', 'aria-label': '原有引擎配置' }, select('原有语音引擎', original.engine, v => updateOriginal('engine', v), engines), h('div', { className: 'vp-fields', style: { marginTop: 16 } }, originalFields), h('p', { className: 'vp-hint', style: { marginTop: 16 } }, '这是官方原有引擎的同一份配置。RVC、ASR、安装组件和自动语音规则仍在原「语音」页，保持原功能。')),
       h('footer', { className: 'vp-footer' }, h('span', { className: 'vp-hint', 'aria-live': 'polite' }, dirty ? '有未保存的修改 · 试听与模式切换前请保存' : '配置已保存'), h('div', { className: 'vp-row' }, btn(dirty ? '撤销修改' : '刷新', refresh), btn(busy === 'save' ? '保存中…' : '保存配置', saveAll, { className: 'vp-btn primary', disabled: Boolean(busy) || !dirty })))),
       h('aside', { className: 'vp-side' }, h('section', { className: 'vp-card' }, h('h3', null, '听听现在的声音'), h('p', { className: 'vp-sub' }, '使用已保存配置，与聊天的实际调用路径一致。'),
-        h('div', { className: 'vp-info' }, h('span', null, '运行版本'), h('span', null, modeNames[snapshot.actualMode])), h('div', { className: 'vp-info' }, h('span', null, '生效引擎'), h('span', null, snapshot.actualMode === 'off' ? '未启用' : snapshot.actualMode === 'enhanced' && snapshot.settings.provider === 'breezeblue' ? '远程 Breeze' : engines.find(x => x[0] === snapshot.original.engine)?.[1] || '原有引擎')),
+        h('div', { className: 'vp-info' }, h('span', null, '运行版本'), h('span', null, modeNames[snapshot.actualMode])), h('div', { className: 'vp-info' }, h('span', null, '生效引擎'), h('span', null, snapshot.actualMode === 'off' ? '未启用' : snapshot.actualMode === 'enhanced' && snapshot.settings.provider === 'breezeblue' ? '远程 Breeze' : snapshot.actualMode === 'enhanced' && snapshot.settings.provider === 'emotion' ? '情绪引擎' : engines.find(x => x[0] === snapshot.original.engine)?.[1] || '原有引擎')),
         snapshot.localTtsActive ? h('p', { className: 'vp-note warn', style: { marginTop: 12 } }, '本地 TTS 接口正在接管，优先于这里的引擎。要走 Breeze，请到「本地接口」关闭 TTS 接管。') : null,
         fallbackInfo && snapshot.actualMode === 'enhanced' ? h('p', { className: 'vp-note warn', style: { marginTop: 12 } }, '上次远程语音回退：' + new Date(fallbackInfo.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) + ' · ' + fallbackInfo.reason + '。聊天路径静默回退，可关闭回退开关查看真实错误。') : null,
         snapshot.rvcVoice ? h('p', { className: 'vp-hint' }, 'RVC 后处理：' + snapshot.rvcVoice + '。听 Breeze 原声请在原语音页取消 RVC。') : null,
-        h('div', { className: 'vp-preview' }, field('试听文本', text, setText, { area: true, hint: '最多200字符；远程合成会计费，不自动重试。' }), btn(busy === 'test' ? '合成中，请稍候…' : '生成试听', preview, { className: 'vp-btn primary', style: { marginTop: 12, width: '100%' }, disabled: Boolean(busy) || dirty || snapshot.actualMode === 'off' || !text.trim() || Array.from(text).length > 200 })),
+        h('div', { className: 'vp-preview' }, field('试听文本', text, setText, { area: true, hint: '最多200字符；可写 [情绪:强度] 与 [风格] 标记试听；远程合成会计费，不自动重试。' }), btn(busy === 'test' ? '合成中，请稍候…' : '生成试听', preview, { className: 'vp-btn primary', style: { marginTop: 12, width: '100%' }, disabled: Boolean(busy) || dirty || snapshot.actualMode === 'off' || !text.trim() || Array.from(text).length > 200 })),
         audio ? h('div', { className: 'vp-preview' }, h('audio', { controls: true, src: audio.url }), h('p', { className: 'vp-hint' }, '本次实际引擎：' + audio.engine), h('a', { href: audio.url, download: 'voice-preview.' + (audio.mime === 'audio/wav' ? 'wav' : audio.mime === 'audio/ogg' ? 'ogg' : 'mp3') }, '下载试听')) : null),
         h('section', { className: 'vp-card' }, h('h3', null, '模式怎么选'), h('ul', { className: 'vp-guide' }, h('li', null, '增强：只运行我们的 voice，支持 Breeze 和原有引擎。'), h('li', null, '官方：只运行官方 voice，增强参数会保留。'), h('li', null, '关闭：不运行任何 voice；控制台留在这里，随时重开。'), h('li', null, '网络超时先看平台历史，避免重复提交计费。'))))))
 }

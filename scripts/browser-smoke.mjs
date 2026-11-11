@@ -38,7 +38,7 @@ const requests = []
 let rejectTts = false
 globalThis.fetch = async (url, init = {}) => {
   const u = new URL(url)
-  assert.equal(u.origin, 'https://api.breeze.blue', 'Fixture only permits the known mock provider')
+  assert.ok(u.origin === 'https://api.breeze.blue' || /^http:\/\/127\.0\.0\.1:\d+$/.test(u.origin), 'Fixture only permits the known mock provider or the local fixture endpoint')
   requests.push({ pathname: u.pathname, method: String(init.method || 'GET').toUpperCase(), body: init.body ? JSON.parse(init.body) : null })
   if (u.pathname === '/v1/voices') return new Response(JSON.stringify({ voices: [{ voice_id: 'voc_browser', name: '玉玲珑 · 测试音色', voice_type: 'personal', origin: 'cloned' }], has_more: false, total: 1, page: 1 }), { headers: { 'content-type': 'application/json' } })
   if (rejectTts) return new Response(JSON.stringify({ code: 'rate_limit', detail: 'test limit' }), { status: 429, headers: { 'content-type': 'application/json' } })
@@ -69,6 +69,7 @@ const server = createServer(async (req, res) => {
       res.setHeader('content-type', 'text/javascript; charset=utf-8'); res.end(source); return
     }
     if (path === '/aurabot/api/avatar') { res.setHeader('content-type', 'image/svg+xml'); res.end('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="16" fill="#324d70"/></svg>'); return }
+    if (path === '/emo') { res.setHeader('content-type', 'audio/wav'); res.end(realWav); return }
     if (path === '/favicon.ico') { res.writeHead(204); res.end(); return }
     let result
     if (path === '/aurabot/api/state') result = state()
@@ -182,6 +183,22 @@ try {
   assert.equal(mods.running('voice'), 'user')
   assert.equal(mods.status().filter(m => m.id === 'voice' && m.running).length, 1, 'only one voice implementation runs')
 
+  // Emotion engine tab: add a fixture endpoint, route calm to it, preview through the actual speak path.
+  await page.getByRole('tab', { name: '情绪引擎', exact: true }).click()
+  await page.getByRole('button', { name: '添加端点', exact: true }).click()
+  await page.getByLabel('端点名称').fill('fixture-emo')
+  await page.getByLabel('地址模板').fill(`http://127.0.0.1:${server.address().port}/emo?text={text}&emotion={emotion}`)
+  await page.getByLabel('情绪路由 · 平静').selectOption('e1')
+  await page.getByRole('button', { name: '保存配置', exact: true }).click()
+  await page.waitForFunction(() => !document.querySelector('.vp-footer .primary:not([disabled])'))
+  assert.equal(cfg.ext['breeze-settings'].provider, 'emotion')
+  assert.equal(cfg.ext['breeze-settings'].emotion.endpoints[0].name, 'fixture-emo')
+  assert.equal(cfg.ext['breeze-settings'].emotion.routing.calm, 'e1')
+  await page.getByRole('button', { name: '生成试听', exact: true }).click()
+  await page.getByText('本次实际引擎：fixture-emo').waitFor()
+  await page.screenshot({ path: join(artifacts, 'panel-emotion.png'), fullPage: true })
+  await page.getByRole('tab', { name: '远程 Breeze', exact: true }).click()
+
   // Visible error without fallback masking, no retry on HTTP responses.
   // (Reopened after mode switches rebuild the panel subtree with a closed details.)
   await page.locator('summary').filter({ hasText: '高级设置' }).click()
@@ -205,6 +222,7 @@ try {
     'console survives official and off; voice-owned route disappears',
     'only one voice implementation runs',
     '429 visible without fallback masking or retry',
+    'emotion tab: endpoint added, calm routed to it, preview speaks through the actual path',
     'dark tokens and narrow viewport screenshots',
     'no page errors',
   ], audioDuration: duration, noPaidCalls: true, noLocalDshInstall: true }

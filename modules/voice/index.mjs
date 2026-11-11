@@ -10,13 +10,14 @@ import { textToSpeech, edgeInstalled, installEdge, voiceConverters } from './tts
 import { createSongVoice } from './rvc.js'
 import { createBreezeClient, redact, normalizeSettings, DEFAULTS } from './breezeblue.mjs'
 import { panelAccessError } from './access.mjs'
+import { parseVoiceTags, applyEmotion, createEmotionSynth, DEFAULT_ROUTING, BREEZE_NATIVE_TAGS } from './emotion.mjs'
 const { toMono16k } = __lib('voice/wav.js')
 const { fileOf } = __lib('local/local.js')
 
 export default {
   id: 'voice',
   name: '语音 · BreezeBlue 扩展',
-  version: '1.2.0',
+  version: '1.3.0',
   api: 1,
   description: '基于内置语音模块的用户副本：新增 BreezeBlue，保留原引擎、本地接口、RVC 与 ASR。',
   // Host 1.2.0 hides UI on same-name replacements. The companion breeze-settings module owns it.
@@ -24,6 +25,7 @@ export default {
     const { hub, onebot, local, http } = api.core
     const lifetime = new AbortController()
     const breeze = createBreezeClient({ signal: lifetime.signal })
+    const emotionSynth = createEmotionSynth({ fetchLike: globalThis.fetch, signal: lifetime.signal, timeoutSeconds: () => settings().timeoutSeconds, directory: api.dataDir('emotion-cache') })
     api.onDispose(() => lifetime.abort())
     const settings = () => api.has('breeze-settings') ? { ...DEFAULTS, ...api.config().ext?.['breeze-settings'] } : { ...DEFAULTS }
     const safeMessage = error => redact(error?.message || error, settings().apiKey)
@@ -66,25 +68,65 @@ export default {
       }
     }
 
+    // Breeze 腿：把我们的风格标记换算回它官方的行内音频标签（zh 方括号形式）。
+    const breezeTaggedText = (text, tags) => {
+      const native = (tags.styles || []).map(s => BREEZE_NATIVE_TAGS[s]).filter(Boolean)
+      return native.length ? text.trim() + ' ' + native.join(' ') : text
+    }
+
+    // 情绪路由链：所选腿 → Breeze → 原引擎；端点腿单次不重试，Breeze 腿沿用重试设置。
+    async function speakEmotion(cleanText, tags, config) {
+      const emo = config.emotion || {}
+      const route = emo.routing?.[tags.emotion] || DEFAULT_ROUTING[tags.emotion] || 'breezeblue'
+      const chain = [...new Set([route, 'breezeblue', 'builtin'])]
+      let firstError = null
+      for (const leg of chain) {
+        if (lifetime.signal.aborted) throw new Error('语音模块已停用')
+        if (leg === 'builtin') {
+          if (firstError) {
+            lastFallback = { at: Date.now(), reason: String(safeMessage(firstError)).slice(0, 120) }
+            api.log.warn('情绪引擎：', safeMessage(firstError), '→ 回退原语音引擎')
+          }
+          return textToSpeech(cleanText, api.config().voice, api.log)
+        }
+        try {
+          if (leg === 'breezeblue') return await speakBreeze(breezeTaggedText(cleanText, tags), applyEmotion(config, tags))
+          const endpoint = (emo.endpoints || []).find(e => e.id === leg)
+          if (!endpoint) throw new Error('情绪端点未配置：' + leg)
+          return await emotionSynth(cleanText, tags, endpoint)
+        } catch (error) {
+          if (lifetime.signal.aborted || error?.code === 'ABORTED') throw error
+          if (config.fallback !== true) throw error
+          if (!firstError) firstError = error
+          api.log.warn('情绪引擎：' + leg + ' 失败（' + safeMessage(error) + '），换下一条腿')
+        }
+      }
+      throw new Error('语音模块已停用')
+    }
+
     async function speak(text) {
       if (lifetime.signal.aborted) throw new Error('语音模块已停用')
+      // 情绪标记统一在最外层解析剔除：所有腿都只念干净的文本。
+      const tags = parseVoiceTags(text)
+      const cleanText = tags.text
       // Preserve the built-in local TTS takeover precedence and fallback behavior.
       if (local.active('tts')) {
         try {
-          const file = fileOf(await local.call('tts', { text }))
+          const file = fileOf(await local.call('tts', { text: cleanText }))
           if (file && existsSync(file)) return { file, engine: 'local' }
         } catch (error) {}
       }
       const config = settings()
+      if (config.provider === 'emotion') return speakEmotion(cleanText, tags, config)
       if (config.provider === 'breezeblue') {
-        try { return await speakBreeze(text, config) } catch (error) {
+        try { return await speakBreeze(breezeTaggedText(cleanText, tags), applyEmotion(config, tags)) } catch (error) {
           if (lifetime.signal.aborted || error?.code === 'ABORTED' || config.fallback !== true) throw error
           lastFallback = { at: Date.now(), reason: String(safeMessage(error)).slice(0, 120) }
           api.log.warn('BreezeBlue 失败：', safeMessage(error), '→ 回退原语音引擎')
         }
       }
       if (lifetime.signal.aborted) throw new Error('语音模块已停用')
-      return textToSpeech(text, api.config().voice, api.log)
+      return textToSpeech(cleanText, api.config().voice, api.log)
     }
 
     // 语音条变声：如果面板里选了「翻唱里导入的音色」，TTS 后再用 RVC 换成她的声音。
