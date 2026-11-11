@@ -94,6 +94,12 @@ test('companion configuration module is eligible for actual host UI and keys sta
   assert.equal(mods.running('breeze-settings'), 'user'); assert.ok(hasUi(s)); assert.equal(s.tab, '')
   assert.equal(publicConfig(cfg).ext['breeze-settings'].apiKey, '')
 })
+test('voice module contributes an official prompt rule asking for punctuation in <voice>', () => {
+  reset()
+  const rule = mods.rules('private').find(x => x.includes('标点'))
+  assert.ok(rule); assert.ok(rule.includes('<voice>')); assert.ok(rule.includes('空格'))
+  assert.ok(mods.rules('social').some(x => x.includes('标点')))
+})
 test('omitting/disabling the companion never auto-enables paid generation', async () => {
   reset(); cfg.modules['breeze-settings'] = { enabled: false }; await mods.sync()
   assert.equal((await mods.use('voice').speak('旧引擎')).engine, 'http'); assert.equal(remoteRequests.length, 0)

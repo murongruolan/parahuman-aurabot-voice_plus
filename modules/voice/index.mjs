@@ -16,7 +16,7 @@ const { fileOf } = __lib('local/local.js')
 export default {
   id: 'voice',
   name: '语音 · BreezeBlue 扩展',
-  version: '1.1.2',
+  version: '1.2.0',
   api: 1,
   description: '基于内置语音模块的用户副本：新增 BreezeBlue，保留原引擎、本地接口、RVC 与 ASR。',
   // Host 1.2.0 hides UI on same-name replacements. The companion breeze-settings module owns it.
@@ -30,6 +30,9 @@ export default {
     const access = (req, method) => panelAccessError(req, method, api.config().security)
     // Chat-path fallbacks are silent by design; remember the last one so the console can show it.
     let lastFallback = null
+    // 提示词补充规则（宿主官方机制，不改宿主源码）：标点分句比空格更贴合语音引擎的韵律。
+    // 模型偶尔不遵守是提示词方案的已知边界；合成侧自动补标点已评估，按用户决定暂不启用。
+    api.rule(() => ['- 写 <voice>…</voice> 里的语音内容时，句子之间用中文标点（，。！？）分隔，不要只靠空格分开几句话。'])
 
     async function breezeSpeech(text, config) {
       const result = await breeze.synthesize(text, config, api.dataDir('breezeblue-cache'))
