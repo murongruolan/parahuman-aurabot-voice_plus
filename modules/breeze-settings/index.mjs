@@ -7,7 +7,7 @@ import { consoleState, modeConfig, revision, saveConsole } from './control.mjs'
 export default {
   id: 'breeze-settings',
   name: '增强语音',
-  version: '1.1.1',
+  version: '1.1.2',
   api: 1,
   description: '官方 / 增强 / 关闭互斥切换；按引擎组织配置，保留原有语音能力。',
   defaults: DEFAULTS,

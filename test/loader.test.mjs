@@ -160,13 +160,40 @@ test('Breeze failure falls back once to configured old engine, sanitized log', a
   assert.ok(!logs.join('\n').includes(cfg.ext['breeze-settings'].apiKey)); assert.ok(logs.some(x => x.includes('回退')))
 })
 test('network-level Breeze failure falls back and is remembered for the console status', async () => {
-  reset(); remote = () => { throw new TypeError('boom') }
+  reset(); cfg.ext['breeze-settings'].retryCount = 0; remote = () => { throw new TypeError('boom') }
   assert.equal((await mods.use('voice').speak('网络抖动')).engine, 'http')
   assert.equal(remoteRequests.length, 1); assert.equal(oldRequests.length, 1)
   const status = await route('/ext/breeze-settings/breeze/status')
   assert.ok(status.lastFallback); assert.equal(typeof status.lastFallback.at, 'number')
   assert.ok(Date.now() - status.lastFallback.at < 60000); assert.match(status.lastFallback.reason, /无法连接/)
   assert.ok(!JSON.stringify(status.lastFallback).includes(cfg.ext['breeze-settings'].apiKey))
+})
+test('connection failures retry per advanced settings and succeed', async () => {
+  reset(); cfg.ext['breeze-settings'].retryCount = 2; cfg.ext['breeze-settings'].retryDelaySeconds = 0
+  let calls = 0
+  remote = () => { calls++; if (calls < 3) throw new TypeError('boom'); return new Response(wav, { headers: { 'content-type': 'audio/wav' } }) }
+  assert.equal((await mods.use('voice').speak('重试')).engine, 'breezeblue')
+  assert.equal(remoteRequests.length, 3); assert.ok(logs.some(x => x.includes('重试 1/2'))); assert.ok(logs.some(x => x.includes('重试 2/2')))
+})
+test('exhausted connection retries fall back and remember final reason', async () => {
+  reset(); cfg.ext['breeze-settings'].retryCount = 1; cfg.ext['breeze-settings'].retryDelaySeconds = 0
+  remote = () => { throw new TypeError('boom') }
+  assert.equal((await mods.use('voice').speak('重试耗尽')).engine, 'http')
+  assert.equal(remoteRequests.length, 2); assert.equal(oldRequests.length, 1)
+  assert.match((await route('/ext/breeze-settings/breeze/status')).lastFallback.reason, /无法连接/)
+})
+test('HTTP responses are never retried regardless of retry count', async () => {
+  reset(); cfg.ext['breeze-settings'].retryCount = 3; cfg.ext['breeze-settings'].retryDelaySeconds = 0
+  remote = () => new Response('{}', { status: 429 })
+  assert.equal((await mods.use('voice').speak('不重试429')).engine, 'http')
+  assert.equal(remoteRequests.length, 1)
+  assert.ok(!logs.some(x => x.includes('重试 1/')), 'HTTP responses must not trigger retries')
+})
+test('retryCount 0 disables connection retry', async () => {
+  reset(); cfg.ext['breeze-settings'].retryCount = 0; cfg.ext['breeze-settings'].retryDelaySeconds = 0
+  remote = () => { throw new TypeError('boom') }
+  assert.equal((await mods.use('voice').speak('零重试')).engine, 'http')
+  assert.equal(remoteRequests.length, 1)
 })
 test('strict mode throws instead of silently changing voice', async () => {
   reset(); cfg.ext['breeze-settings'].fallback = false; remote = () => new Response('{}', { status: 429 })

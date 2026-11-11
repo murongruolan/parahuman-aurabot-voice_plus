@@ -5,7 +5,7 @@ import { DEFAULTS } from './settings.mjs'
 export const MODES = ['enhanced', 'official', 'off']
 export const ENGINES = ['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http']
 const TEXT_LIMITS = { apiKey: 512, voiceId: 160, modelId: 120, languageCode: 2, instructions: 2000 }
-const NUMBER_RULES = { guidanceScale: [1, 10], speed: [0.5, 2], volume: [0.01, 2], timeoutSeconds: [10, 600] }
+const NUMBER_RULES = { guidanceScale: [1, 10], speed: [0.5, 2], volume: [0.01, 2], timeoutSeconds: [10, 600], retryDelaySeconds: [0, 10] }
 const ORIGINAL_TEXT = { voice: 160, rate: 20, pitch: 20 }
 const GROUPS = {
   cosyvoice: { text: { url: 2048, spkId: 160, instruct: 2000 }, numbers: { sampleRate: [8000, 96000] }, enums: { mode: ['sft', 'instruct'] } },
@@ -38,7 +38,11 @@ export function extensionPatch(raw, current) {
       if (key === 'languageCode' && text && !/^[A-Za-z]{2}$/.test(text)) fail('语言代码请留空或填写 zh / en。')
       patch[key] = key === 'languageCode' ? text.toLowerCase() : text
     } else if (Object.hasOwn(NUMBER_RULES, key)) patch[key] = number(value, NUMBER_RULES[key], key)
-    else if (key === 'provider') patch[key] = choice(value, ['builtin', 'breezeblue'], key)
+    else if (key === 'retryCount') {
+      const retries = number(value, [0, 5], key)
+      if (!Number.isInteger(retries)) fail('重试次数必须是 0–5 的整数。')
+      patch[key] = retries
+    } else if (key === 'provider') patch[key] = choice(value, ['builtin', 'breezeblue'], key)
     else if (key === 'outputFormat') patch[key] = choice(value, ['wav', 'wav_24000', 'mp3', 'mp3_24000_64', 'mp3_24000_96', 'mp3_24000_128', 'mp3_24000_160'], key)
     else if (key === 'speakerBoost' || key === 'fallback') {
       if (typeof value !== 'boolean') fail(`${key} 必须是开关值。`)

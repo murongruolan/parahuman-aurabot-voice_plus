@@ -4,6 +4,7 @@ export const DEFAULTS = Object.freeze({
   provider: 'builtin', apiKey: '', voiceId: '', modelId: 'breeze-tts-2',
   languageCode: '', instructions: '', guidanceScale: 1, speed: 1, volume: 1,
   speakerBoost: false, outputFormat: 'wav', timeoutSeconds: 300, fallback: true,
+  retryCount: 2, retryDelaySeconds: 1,
 })
 export const SETTINGS = [
   { key: 'provider', label: '语音提供方', type: 'select', options: [

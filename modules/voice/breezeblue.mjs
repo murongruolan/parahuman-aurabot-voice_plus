@@ -9,6 +9,7 @@ export const DEFAULTS = Object.freeze({
   provider: 'builtin', apiKey: '', voiceId: '', modelId: 'breeze-tts-2',
   languageCode: '', instructions: '', guidanceScale: 1, speed: 1, volume: 1,
   speakerBoost: false, outputFormat: 'wav', timeoutSeconds: 300, fallback: true,
+  retryCount: 2, retryDelaySeconds: 1,
 })
 const MAX_AUDIO_BYTES = 32 * 1024 * 1024
 const MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -211,7 +212,9 @@ export function createBreezeClient({ fetchImpl = (...args) => globalThis.fetch(.
       if (error instanceof BreezeError) throw error
       if (requestSignal.aborted) throw new BreezeError(signal?.aborted ? '语音模块已停用。' : 'Breeze 请求超时；请先检查平台历史，避免重复扣费。', signal?.aborted ? 'ABORTED' : 'TIMEOUT')
       // Never include native request errors: proxies/transports may embed authenticated headers.
-      throw new BreezeError('无法连接 Breeze 官方 API，请检查网络或代理。未自动重试；已提交的请求请先检查平台历史。', 'NETWORK_ERROR')
+      // Classify by Node error code only (safe uppercase token).
+      const nativeCode = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{1,31}$/.test(error.code) ? `（${error.code}）` : ''
+      throw new BreezeError(`无法连接 Breeze 官方 API${nativeCode}，请检查网络或代理。已提交的请求请先检查平台历史。`, 'NETWORK_ERROR')
     }
   }
   function requestSignal(timeoutMs) {

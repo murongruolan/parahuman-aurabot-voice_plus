@@ -52,6 +52,12 @@ test('save validates before changing data and rejects concurrent config edits', 
   assert.throws(() => saveConsole(api, { revision: rev, settings: { speed: 1 } }), /配置已/)
   assert.throws(() => saveConsole(api, { revision: revision(api.config()), modules: {} }))
 })
+test('retry settings validate as bounded integers and delay', () => {
+  const old = { apiKey: 'secret' }
+  assert.deepEqual(extensionPatch({ retryCount: 0, retryDelaySeconds: 0 }, old), { ...old, retryCount: 0, retryDelaySeconds: 0 })
+  assert.equal(extensionPatch({ retryCount: 5, retryDelaySeconds: 10 }, old).retryCount, 5)
+  for (const patch of [{ retryCount: -1 }, { retryCount: 6 }, { retryCount: 1.5 }, { retryCount: '2' }, { retryDelaySeconds: -1 }, { retryDelaySeconds: 11 }, { retryDelaySeconds: '1' }]) assert.throws(() => extensionPatch(patch, old))
+})
 test('console controls reject remote/spoofed clients independently of host', () => {
   const local = { method: 'POST', socket: { remoteAddress: '127.0.0.1' }, headers: { host: 'localhost:5099' } }
   assert.equal(panelAccessError(local, 'POST'), null)

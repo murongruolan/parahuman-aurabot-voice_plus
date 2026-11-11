@@ -114,6 +114,15 @@ try {
   assert.equal(cfg.ext['breeze-settings'].speed, 0.95)
   assert.equal((await page.content()).includes('brz_browser_fixture_only'), false, 'key must never be rendered back')
 
+  // Retry settings in advanced: editable, saved, validated bounds.
+  await page.locator('summary').filter({ hasText: '高级设置' }).click()
+  await page.getByLabel('重试次数').fill('2')
+  await page.getByLabel('重试间隔（秒）').fill('0.5')
+  await page.getByRole('button', { name: '保存配置', exact: true }).click()
+  await page.waitForFunction(() => !document.querySelector('.vp-footer .primary:not([disabled])'))
+  assert.equal(cfg.ext['breeze-settings'].retryCount, 2)
+  assert.equal(cfg.ext['breeze-settings'].retryDelaySeconds, 0.5)
+
   // Actual speak path, one billed request only.
   await page.getByRole('button', { name: '生成试听', exact: true }).click()
   const preview = page.locator('audio[src^="blob:"]')
@@ -173,7 +182,8 @@ try {
   assert.equal(mods.running('voice'), 'user')
   assert.equal(mods.status().filter(m => m.id === 'voice' && m.running).length, 1, 'only one voice implementation runs')
 
-  // Visible error without fallback masking, no retry.
+  // Visible error without fallback masking, no retry on HTTP responses.
+  // (Reopened after mode switches rebuild the panel subtree with a closed details.)
   await page.locator('summary').filter({ hasText: '高级设置' }).click()
   await page.getByLabel('Breeze 失败时回退原引擎（不重复请求 Breeze）').uncheck()
   await page.getByRole('button', { name: '保存配置', exact: true }).click()

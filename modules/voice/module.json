@@ -1,7 +1,7 @@
 {
   "id": "voice",
   "name": "语音 · BreezeBlue 扩展",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "api": 1,
   "description": "从 Aurabot 1.2.0 内置语音模块复制的用户扩展，新增 BreezeBlue 远程 TTS，保留原引擎、RVC 与 ASR。",
   "license": "MIT",

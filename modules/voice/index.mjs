@@ -16,7 +16,7 @@ const { fileOf } = __lib('local/local.js')
 export default {
   id: 'voice',
   name: '语音 · BreezeBlue 扩展',
-  version: '1.1.1',
+  version: '1.1.2',
   api: 1,
   description: '基于内置语音模块的用户副本：新增 BreezeBlue，保留原引擎、本地接口、RVC 与 ASR。',
   // Host 1.2.0 hides UI on same-name replacements. The companion breeze-settings module owns it.
@@ -43,6 +43,26 @@ export default {
       return { file, engine: 'breezeblue' }
     }
 
+    const pause = ms => new Promise((ok, fail) => {
+      const timer = setTimeout(ok, ms)
+      lifetime.signal.addEventListener('abort', () => { clearTimeout(timer); fail(new Error('语音模块已停用')) }, { once: true })
+    })
+    // Retry only connection-level failures (no HTTP response was received). HTTP status
+    // errors and timeouts are never retried: the platform may have already billed.
+    async function speakBreeze(text, config) {
+      const max = typeof config.retryCount === 'number' && Number.isFinite(config.retryCount) ? Math.floor(config.retryCount) : DEFAULTS.retryCount
+      const attempts = Math.max(0, Math.min(max, 5))
+      const secs = typeof config.retryDelaySeconds === 'number' && Number.isFinite(config.retryDelaySeconds) ? config.retryDelaySeconds : DEFAULTS.retryDelaySeconds
+      const delay = Math.max(0, Math.min(secs, 60)) * 1000
+      for (let attempt = 0; ; attempt++) {
+        try { return await breezeSpeech(text, config) } catch (error) {
+          if (error?.code !== 'NETWORK_ERROR' || attempt >= attempts || lifetime.signal.aborted) throw error
+          api.log.warn(`BreezeBlue 连接失败（${safeMessage(error)}），${delay ? Math.round(delay) + ' 毫秒后重试' : '立即重试'} ${attempt + 1}/${attempts}`)
+          await pause(delay)
+        }
+      }
+    }
+
     async function speak(text) {
       if (lifetime.signal.aborted) throw new Error('语音模块已停用')
       // Preserve the built-in local TTS takeover precedence and fallback behavior.
@@ -54,10 +74,10 @@ export default {
       }
       const config = settings()
       if (config.provider === 'breezeblue') {
-        try { return await breezeSpeech(text, config) } catch (error) {
+        try { return await speakBreeze(text, config) } catch (error) {
           if (lifetime.signal.aborted || error?.code === 'ABORTED' || config.fallback !== true) throw error
           lastFallback = { at: Date.now(), reason: String(safeMessage(error)).slice(0, 120) }
-          api.log.warn('BreezeBlue 失败：', safeMessage(error), '→ 回退原语音引擎（未重复请求 Breeze）')
+          api.log.warn('BreezeBlue 失败：', safeMessage(error), '→ 回退原语音引擎')
         }
       }
       if (lifetime.signal.aborted) throw new Error('语音模块已停用')
