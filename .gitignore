@@ -15,3 +15,6 @@ research/downloads/
 *.mp3
 *.zip
 *.log
+
+# 本地参考资料：只留盘上和仓库外备份，不进 git
+BreezeBlue-文档与API接口整合文档.md

@@ -18,7 +18,7 @@ export const EMOTIONS = {
   lazy: { zh: '慵懒', instr: '语气慵懒、慢悠悠，有点提不起劲' },
 }
 export const AROUSALS = {
-  L: { zh: '低唤醒', instr: '整体能量低：气声多一些、音量略小、语速放慢、停顿拉长', speed: 0.85 },
+  L: { zh: '低唤醒', instr: '整体能量低：气声多一些、音量略小、语速放慢、停顿拉长', speed: 0.9 },
   M: { zh: '中唤醒', instr: '用自然说话的能量与语速', speed: 1 },
   H: { zh: '高唤醒', instr: '能量拉满：语速加快、音调更高、更用力', speed: 1.15 },
 }

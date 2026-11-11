@@ -59,7 +59,7 @@
 
 - 用户居家睡觉期间授权开发：三层情绪 + 端点列表 + 8 情绪路由 + 命名模板。先勘察后施工。
 - 关键约束：宿主 reply.js 只认裸 `<voice></voice>` → 情绪标记放内容内 `[emotion:arousal]`＋`[style]`；voices/index 在 speak 最外层按词汇表剥离（未知方括号与 Breeze 原生 `[笑]` 等保留直达）。
-- 新文件 emotion.mjs：EMOTIONS/AROUSALS/STYLES 指令表、解析、applyEmotion（指令合并 + speed×0.85/1/1.15 + guidance≥2）、BREEZE_NATIVE_TAGS、通用 HTTP 端点合成（URL/POST 模板、headers 解析、WAV/MP3/OGG 嗅探、单次不重试）。
+- 新文件 emotion.mjs：EMOTIONS/AROUSALS/STYLES 指令表、解析、applyEmotion（指令合并 + speed×0.9/1/1.15 + guidance≥2）、BREEZE_NATIVE_TAGS、通用 HTTP 端点合成（URL/POST 模板、headers 解析、WAV/MP3/OGG 嗅探、单次不重试）。
 - 路由链 speakEmotion：所选腿 → Breeze（1.1.2 重试有效）→ 原引擎；端点失败日志「换下一条腿」并计入 lastFallback（如最终落到原引擎）。
 - 配置 `ext["breeze-settings"].emotion`：endpoints/routing/templates；control.mjs 白名单与脱敏（headers 空=保持、null=清空）；consoleState 屏蔽 headers；panel.js 新「情绪引擎」tab（端点 CRUD、8 情绪选择器、模板保存/应用/删除）。
 - Breeze 官方文档（llms.txt + guides/audio-tags）核实：中文标签为方括号 34 类；voice_settings 无唤醒字段。

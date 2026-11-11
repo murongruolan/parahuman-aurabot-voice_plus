@@ -23,7 +23,7 @@ test('unrecognized brackets and native Breeze tags stay in the text', () => {
 test('applyEmotion merges instructions, scales speed and raises guidance; unflagged passes config through', () => {
   const cfg = applyEmotion({ instructions: '温柔', speed: 1, guidanceScale: 1 }, parseVoiceTags('[down:L]对不起'))
   assert.match(cfg.instructions, /温柔/); assert.match(cfg.instructions, /失落/)
-  assert.equal(cfg.speed, 0.85); assert.equal(cfg.guidanceScale, 2)
+  assert.equal(cfg.speed, 0.9); assert.equal(cfg.guidanceScale, 2)
   const unchanged = { instructions: '', speed: 1, guidanceScale: 1 }
   assert.equal(applyEmotion(unchanged, parseVoiceTags('你好')), unchanged)
   assert.equal(Object.keys(DEFAULT_ROUTING).length, 8)

@@ -34,7 +34,7 @@
 - 用户反馈原「语音」页在增强模式下仍显示：宿主 `TAB_MODS.voice=['voice']` 只随模块运行状态显隐，官方机制无隐藏入口；已核实 `keepPanel` 未被客户端消费。采用文档注明（使用说明第 4 节）而非隐藏/DOM 注入。
 - 目标机日志曾记录一次 `BreezeBlue 失败：无法连接 Breeze 官方 API…→ 回退原语音引擎`（10:27:37，NETWORK_ERROR，非超时、未计费）；1.1.1 起 voice 模块将最近一次回退（时间+脱敏原因）通过 `/breeze/status` 暴露，控制台侧栏展示。
 - 1.2.0：勘察确认 `<voice>` 标点缺失是模型自带习惯（提示词未禁止标点；`reply.js`/`faces.js:77 tidySpeech` 不删标点）。按用户决定采用**仅提示词侧**：`api.rule` 注册规则要求 `<voice>` 内用中文标点分句；合成侧自动补标点已评估未启用（模型不遵守时的备用方案）。
-- 1.3.0 情绪路由：宿主只认裸 `<voice>`，情绪用内容内标记 `[emotion:arousal]…[style]`（合成前按词汇表剥离，未知方括号与 Breeze 原生 `[笑]` 等标签保留）；`provider=emotion` 腿链「该情绪所选 → Breeze（重试）→ 原引擎」。Breeze 官方核实：中文 audio-tags 方括号、`voice_settings` 无唤醒字段 → L/M/H 映射 speed×0.85/×1/×1.15 + 动态表演指令（guidance≥2）；风格转官方中文标签。端点通用 HTTP 适配（URL/POST 模板 `{text}{emotion}{arousal}{styles}{reqid}`、headers 脱敏保存、单次不重试），后续服务商文档到达时在 `emotion.mjs` 增加专用适配。配置在 `ext["breeze-settings"].emotion`（endpoints/routing/templates），控制台「情绪引擎」tab 管理。
+- 1.3.0 情绪路由：宿主只认裸 `<voice>`，情绪用内容内标记 `[emotion:arousal]…[style]`（合成前按词汇表剥离，未知方括号与 Breeze 原生 `[笑]` 等标签保留）；`provider=emotion` 腿链「该情绪所选 → Breeze（重试）→ 原引擎」。Breeze 官方核实：中文 audio-tags 方括号、`voice_settings` 无唤醒字段 → L/M/H 映射 speed×0.9/×1/×1.15 + 动态表演指令（guidance≥2）；风格转官方中文标签。端点通用 HTTP 适配（URL/POST 模板 `{text}{emotion}{arousal}{styles}{reqid}`、headers 脱敏保存、单次不重试），后续服务商文档到达时在 `emotion.mjs` 增加专用适配。配置在 `ext["breeze-settings"].emotion`（endpoints/routing/templates），控制台「情绪引擎」tab 管理。
 
 ## 4. 目标机器升级步骤
 
