@@ -11,8 +11,8 @@
 
 ## 分支
 
-- `work/voice-plus-console`：1.0.0 已验收基线。
-- `handoff/voice-plus-1.1-wip`：1.1 → 1.3 全部开发；目标机器验收通过后合并到 `main` 并设为默认分支。
+- `main`（默认分支）：1.0 → 1.4 全部开发与验收基线。
+- `work/voice-plus-console`：1.0.0 已验收基线，保留作回滚。
 
 ## 目录
 
