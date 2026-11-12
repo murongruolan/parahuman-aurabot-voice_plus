@@ -5,39 +5,54 @@ const __lib = globalThis.aurabot.lib // 插件内部源码（复制出来后靠�
 // 面板里的试听、语音识别自检也在这里。
 // 导出 speak(text) → { file, engine }：聊天中枢发语音时找它。替换这个模块就能换成任何你想要的念法。
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { textToSpeech, edgeInstalled, installEdge, voiceConverters } from './tts.js'
 import { createSongVoice } from './rvc.js'
-import { createBreezeClient, redact, normalizeSettings, DEFAULTS } from './breezeblue.mjs'
+import { createBreezeClient, redact, normalizeSettings } from './breezeblue.mjs'
 import { panelAccessError } from './access.mjs'
-import { parseVoiceTags, applyEmotion, createEmotionSynth, DEFAULT_ROUTING, BREEZE_NATIVE_TAGS } from './emotion.mjs'
+import { parseVoiceTags, EmotionError } from './emotion.mjs'
 const { toMono16k } = __lib('voice/wav.js')
 const { fileOf } = __lib('local/local.js')
 
 export default {
   id: 'voice',
   name: '语音 · BreezeBlue 扩展',
-  version: '1.4.0',
+  version: '1.4.1',
   api: 1,
-  description: '基于内置语音模块的用户副本：新增 BreezeBlue，保留原引擎、本地接口、RVC 与 ASR。',
+  description: '基于内置语音模块的用户副本：情绪引擎（Breeze / GPT-SoVITS）、保留原引擎、本地接口、RVC 与 ASR。',
   // Host 1.2.0 hides UI on same-name replacements. The companion breeze-settings module owns it.
   setup(api) {
     const { hub, onebot, local, http } = api.core
     const lifetime = new AbortController()
     const breeze = createBreezeClient({ signal: lifetime.signal })
-    const emotionSynth = createEmotionSynth({ fetchLike: globalThis.fetch, signal: lifetime.signal, timeoutSeconds: () => settings().timeoutSeconds, directory: api.dataDir('emotion-cache') })
     api.onDispose(() => lifetime.abort())
-    const settings = () => api.has('breeze-settings') ? { ...DEFAULTS, ...api.config().ext?.['breeze-settings'] } : { ...DEFAULTS }
-    const safeMessage = error => redact(error?.message || error, settings().apiKey)
+
+    // 引擎 API Key 存在配套模块的 engine-auth.json 里（不进配置、不进 /state）；
+    // breeze-settings 停用时拿不到 Key，Breeze 腿自动走回退。
+    const companion = () => api.has('breeze-settings') ? api.use('breeze-settings') : null
+    const engineKey = id => { const c = companion(); const k = c && typeof c.getEngineKey === 'function' ? c.getEngineKey(id) : ''; return String(k || '') }
+    const settings = () => {
+      const defaults = { outputFormat: 'wav', timeoutSeconds: 300, fallback: true, retryCount: 2, retryDelaySeconds: 1, speakerBoost: true, engines: [], emotions: [], strengths: [], presets: [] }
+      const ext = api.config().ext?.['breeze-settings']
+      return { ...defaults, ...(ext && typeof ext === 'object' && !Array.isArray(ext) ? ext : {}) }
+    }
+    const redactAll = message => { let m = String(message ?? ''); for (const e of settings().engines) { const k = engineKey(e.id); if (k) m = redact(m, k) } return m }
+    const safeMessage = error => redactAll(error?.message || error)
     const access = (req, method) => panelAccessError(req, method, api.config().security)
     // Chat-path fallbacks are silent by design; remember the last one so the console can show it.
     let lastFallback = null
-    // 提示词补充规则（宿主官方机制，不改宿主源码）：标点 + 可开关的情绪标记教学。
+
+    // 提示词补充规则（宿主官方机制，不改宿主源码）：标点 + 按挂载情绪动态生成的标记教学。
     api.rule((kind, cfg) => {
       const lines = ['- 写 <voice>…</voice> 里的语音内容时，句子之间用中文标点（，。！？）分隔，不要只靠空格分开几句话。']
-      if (((cfg || {}).ext || {})['breeze-settings']?.promptTags !== false) {
-        lines.push('- 语音可带情绪标记：<voice> 开头写 [情绪:强度]。情绪：calm 平静 / playful 俏皮 / down 失落 / angry 生气 / excited 兴奋 / proud 得意 / whiny 娇嗔 / lazy 慵懒；强度：L 轻 / M 标准 / H 强烈。例：<voice>[excited:H]今天运气真好！</voice>；没有情绪就不写。')
-        lines.push('- 需要副语言时在句中或句尾加 [whisper 气声] / [cry 哭腔] / [laugh 笑腔] / [tremble 颤音] / [drawl 拖腔] / [growl 狠厉] / [coquettish 撒娇] / [sigh 叹气]，也可以直接用 Breeze 行内标签如 [笑] [叹气] [耳语] [哭声]。')
+      const ext = (((cfg || {}).ext || {})['breeze-settings']) || {}
+      const emotions = Array.isArray(ext.emotions) ? ext.emotions.filter(e => e.engine) : []
+      const strengths = Array.isArray(ext.strengths) ? ext.strengths : []
+      const breezeOn = Array.isArray(ext.engines) && ext.engines.some(e => e.type === 'breeze' && e.promptTags !== false)
+      if (emotions.length) {
+        lines.push('- 语音可带情绪标记：<voice> 开头写 [情绪:强度]。可选情绪：' + emotions.map(e => e.code + ' ' + e.name).join(' / ') + '；强度：' + (strengths.length ? strengths.map(a => a.name).join('/') : 'L 轻 / M 标准 / H 强烈') + '，或由你自己判断。没有情绪就不写标记。')
+        if (breezeOn) lines.push('- 需要副语言时在句中或句尾加 [whisper 气声] / [cry 哭腔] / [laugh 笑腔] / [sigh 叹气]，也可以直接用 Breeze 行内标签如 [笑] [叹气] [耳语] [哭声]。')
       }
       return lines
     })
@@ -64,9 +79,9 @@ export default {
     // with exponential backoff. Other HTTP statuses and timeouts are never retried.
     async function speakBreeze(text, config) {
       if (Date.now() < breakerUntil) throw new Error(`Breeze 额度熔断中（连续 402×3），约 ${Math.ceil((breakerUntil - Date.now()) / 60000)} 分钟后自动恢复`)
-      const max = typeof config.retryCount === 'number' && Number.isFinite(config.retryCount) ? Math.floor(config.retryCount) : DEFAULTS.retryCount
+      const max = Number.isFinite(config.retryCount) ? Math.floor(config.retryCount) : 2
       const attempts = Math.max(0, Math.min(max, 5))
-      const secs = typeof config.retryDelaySeconds === 'number' && Number.isFinite(config.retryDelaySeconds) ? config.retryDelaySeconds : DEFAULTS.retryDelaySeconds
+      const secs = Number.isFinite(config.retryDelaySeconds) ? config.retryDelaySeconds : 1
       const baseDelay = Math.max(0, Math.min(secs, 60)) * 1000
       for (let attempt = 0; ; attempt++) {
         try {
@@ -93,34 +108,59 @@ export default {
       return native.length ? text.trim() + ' ' + native.join(' ') : text
     }
 
-    // 情绪路由链：所选腿 → Breeze → 原引擎；端点腿单次不重试，Breeze 腿沿用重试设置。
-    async function speakEmotion(cleanText, tags, config) {
-      const emo = config.emotion || {}
-      const route = emo.routing?.[tags.emotion] || DEFAULT_ROUTING[tags.emotion] || 'breezeblue'
-      const chain = [...new Set([route, 'breezeblue', 'builtin'])]
-      let firstError = null
-      for (const leg of chain) {
-        if (lifetime.signal.aborted) throw new Error('语音模块已停用')
-        if (leg === 'builtin') {
-          if (firstError) {
-            lastFallback = { at: Date.now(), reason: String(safeMessage(firstError)).slice(0, 120) }
-            api.log.warn('情绪引擎：', safeMessage(firstError), '→ 回退原语音引擎')
-          }
-          return textToSpeech(cleanText, api.config().voice, api.log)
-        }
-        try {
-          if (leg === 'breezeblue') return await speakBreeze(breezeTaggedText(cleanText, tags), applyEmotion(config, tags))
-          const endpoint = (emo.endpoints || []).find(e => e.id === leg)
-          if (!endpoint) throw new Error('情绪端点未配置：' + leg)
-          return await emotionSynth(cleanText, tags, endpoint)
-        } catch (error) {
-          if (lifetime.signal.aborted || error?.code === 'ABORTED') throw error
-          if (config.fallback !== true) throw error
-          if (!firstError) firstError = error
-          api.log.warn('情绪引擎：' + leg + ' 失败（' + safeMessage(error) + '），换下一条腿')
-        }
+    // 强度解析（实测铁律）：模型自选 → 用模型写的档位（没写按「标准」）；面板钉死 → 忽略模型写的；自定义 → 直接数值。
+    function resolveStrength(row, tags, cfg) {
+      const tierValue = id => { const t = cfg.strengths.find(s => s.id === id); return t ? t.value : 4 }
+      const tokenTier = tags.arousal === 'L' ? 'l1' : tags.arousal === 'H' ? 'h1' : 's1'
+      if (!row || row.strength === 'model') return tierValue(tokenTier)
+      if (typeof row.strength === 'number') return row.strength
+      return tierValue(row.strength)
+    }
+    function strengthLabel(row, tags, cfg) {
+      if (!row || row.strength === 'model') {
+        const t = cfg.strengths.find(s => s.id === (tags.arousal === 'L' ? 'l1' : tags.arousal === 'H' ? 'h1' : 's1'))
+        return t ? t.name : '标准'
       }
-      throw new Error('语音模块已停用')
+      if (typeof row.strength === 'number') return '自定义 ' + row.strength
+      const t = cfg.strengths.find(s => s.id === row.strength)
+      return t ? t.name : '标准'
+    }
+
+    // 每个情绪的 Breeze 请求配置：指令留空 = 纯文本模式（guidance 恒 1.0，音色相似度增强生效）。
+    function breezeConfig(engine, row, tags, cfg) {
+      const hasRow = !!(row && row.engine === engine.id)
+      const instructions = hasRow ? String(row.instructions || '').trim() : ''
+      const guidance = instructions ? resolveStrength(hasRow ? row : null, tags, cfg) : 1
+      return { base: engine.base, apiKey: engineKey(engine.id), voiceId: engine.voiceId,
+        modelId: 'breeze-tts-2-multilingual', languageCode: 'zh',
+        instructions, guidanceScale: Math.min(10, Math.max(1, guidance)), speakerBoost: cfg.speakerBoost,
+        outputFormat: cfg.outputFormat, timeoutSeconds: cfg.timeoutSeconds,
+        retryCount: cfg.retryCount, retryDelaySeconds: cfg.retryDelaySeconds }
+    }
+
+    // GPT-SoVITS 腿：POST 引擎地址，带文本 + 情绪代号 + 强度；参考模式按情绪卡片配置展开。
+    async function speakGpt(cleanText, tags, engine, row) {
+      const cfg = settings()
+      if (lifetime.signal.aborted) throw new Error('语音模块已停用')
+      const ref = (row && row.ref) || { mode: 'none', path: '', text: '', param: '' }
+      const body = { text: cleanText, emotion: tags.emotion, strength: strengthLabel(row, tags, cfg) }
+      if (ref.mode === 'path') { body.ref_audio_path = ref.path; body.prompt_text = ref.text }
+      if (ref.mode === 'param') body.emotion_param = ref.param || tags.emotion
+      const init = { method: 'POST', headers: { 'content-type': 'application/json', ...(engine.apiKey ? { authorization: 'Bearer ' + engine.apiKey } : {}) },
+        body: JSON.stringify(body), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(Math.max(10, cfg.timeoutSeconds) * 1000)]) }
+      let response
+      try { response = await globalThis.fetch(engine.base, init) }
+      catch { throw new EmotionError('GPT-SoVITS 引擎连接失败（未收到响应）。', 'NETWORK_ERROR') }
+      if (!response.ok) throw new EmotionError(`GPT-SoVITS 引擎返回 HTTP ${response.status}。`, 'HTTP_STATUS', response.status)
+      const buf = Buffer.from(await response.arrayBuffer())
+      if (!buf.length || buf.length > 32 * 1024 * 1024) throw new EmotionError('GPT-SoVITS 引擎响应过大或为空。', 'BAD_AUDIO')
+      const head = buf.subarray(0, 16).toString('latin1')
+      const type = head.startsWith('RIFF') && head.slice(8, 12) === 'WAVE' ? 'wav' : head.startsWith('ID3') || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) ? 'mp3' : head.startsWith('OggS') ? 'ogg' : null
+      if (!type) throw new EmotionError('GPT-SoVITS 引擎没有返回可识别的音频（WAV/MP3/OGG）。', 'BAD_AUDIO')
+      const dir = api.dataDir('gptsovits-cache')
+      const file = join(dir, `gpt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${type}`)
+      mkdirSync(dir, { recursive: true }); writeFileSync(file, buf)
+      return { file, engine: engine.name }
     }
 
     async function speak(text) {
@@ -135,14 +175,18 @@ export default {
           if (file && existsSync(file)) return { file, engine: 'local' }
         } catch (error) {}
       }
-      const config = settings()
-      if (config.provider === 'emotion') return speakEmotion(cleanText, tags, config)
-      if (config.provider === 'breezeblue') {
-        try { return await speakBreeze(breezeTaggedText(cleanText, tags), applyEmotion(config, tags)) } catch (error) {
-          if (lifetime.signal.aborted || error?.code === 'ABORTED' || config.fallback !== true) throw error
-          lastFallback = { at: Date.now(), reason: String(safeMessage(error)).slice(0, 120) }
-          api.log.warn('BreezeBlue 失败：', safeMessage(error), '→ 回退原语音引擎')
-        }
+      const cfg = settings()
+      const row = tags.flagged ? cfg.emotions.find(e => e.code === tags.emotion) : null
+      let engine = row && row.engine ? cfg.engines.find(x => x.id === row.engine) : null
+      if (!engine) engine = cfg.engines[0] || null // 默认引擎 = 引擎列表第一个
+      if (!engine) return textToSpeech(cleanText, api.config().voice, api.log)
+      try {
+        if (engine.type === 'gptsovits') return await speakGpt(cleanText, tags, engine, row)
+        return await speakBreeze(breezeTaggedText(cleanText, tags), breezeConfig(engine, row, tags, cfg))
+      } catch (error) {
+        if (lifetime.signal.aborted || error?.code === 'ABORTED' || cfg.fallback !== true) throw error
+        lastFallback = { at: Date.now(), reason: String(safeMessage(error)).slice(0, 120) }
+        api.log.warn('情绪引擎：', safeMessage(error), '→ 回退原语音引擎')
       }
       if (lifetime.signal.aborted) throw new Error('语音模块已停用')
       return textToSpeech(cleanText, api.config().voice, api.log)
@@ -224,38 +268,21 @@ export default {
     api.route('/ext/breeze-settings/breeze/status', req => {
       const denied = access(req, 'GET')
       if (denied) return denied
-      const config = settings()
-      let valid = true, message = ''
-      try { normalizeSettings(config) } catch (error) { valid = false; message = safeMessage(error) }
-      return { ok: true, provider: config.provider, configured: valid,
-        keySet: Boolean(config.apiKey), voiceId: config.voiceId || '',
-        localTtsActive: Boolean(local.active('tts')), voiceEnabled: api.config().voice?.enabled !== false,
-        lastFallback, breakerUntil,
-        message }
+      return { ok: true, localTtsActive: Boolean(local.active('tts')), voiceEnabled: api.config().voice?.enabled !== false,
+        lastFallback, breakerUntil }
     })
     api.route('/ext/breeze-settings/breeze/voices', async req => {
       const denied = access(req, 'POST')
       if (denied) return denied
       try {
         const b = await http.body(req)
-        return { ok: true, ...await breeze.voices(settings(), {
+        const engine = settings().engines.find(e => e.id === b.engineId && e.type === 'breeze')
+        if (!engine) return { ok: false, message: '引擎不存在或不是 Breeze 类型。' }
+        const apiKey = engineKey(engine.id)
+        if (!apiKey) return { ok: false, message: '该引擎还没有保存 API Key。' }
+        return { ok: true, ...await breeze.voices({ apiKey, voiceId: '', base: engine.base, timeoutSeconds: settings().timeoutSeconds }, {
           type: b.type || 'personal', search: b.search || '', pageToken: b.pageToken || '', page: b.page || 1,
         }) }
-      } catch (error) { return { ok: false, message: safeMessage(error) } }
-    })
-    api.route('/ext/breeze-settings/breeze/test', async req => {
-      const denied = access(req, 'POST')
-      if (denied) return denied
-      try {
-        const b = await http.body(req)
-        const config = settings()
-        // A supplied unsaved key/provider is deliberately ignored. Save first.
-        if (typeof b.text !== 'string' || !b.text.trim() || Array.from(b.text).length > 200) {
-          return { ok: false, message: '试听请输入 1–200 个字符；每次试听都会调用平台并计费。' }
-        }
-        const { file, engine } = await breezeSpeech(b.text, config)
-        const buf = readFileSync(file)
-        return { ok: true, engine, mime: file.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg', data: buf.toString('base64') }
       } catch (error) { return { ok: false, message: safeMessage(error) } }
     })
 

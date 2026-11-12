@@ -65,7 +65,8 @@ export function parseVoiceTags(raw) {
     styles.push(STYLE_ALIAS[s])
     return ''
   })
-  const cleaned = rest.replace(/[ \t]{2,}/g, ' ').trim()
+  // 模型幻觉保护：小写拉丁代号标记（即使不是已知情绪）也剥离；中文方括号（[笑]/[呲牙] 等）保留给引擎。
+  const cleaned = rest.replace(/\[[a-z][a-z0-9_-]{0,19}(:[A-Za-z]{1,8})?\]/g, '').replace(/[ \t]{2,}/g, ' ').trim()
   return { emotion, arousal, styles: [...new Set(styles)], text: cleaned, flagged }
 }
 

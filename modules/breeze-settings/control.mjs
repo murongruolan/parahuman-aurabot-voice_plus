@@ -1,179 +1,20 @@
-// State/configuration for the independent console; no host source patches.
+// 情绪引擎控制台后端：引擎注册表 + 情绪路由 + 强度档位 + 预设。不做旧配置向前兼容。
 import { createHash } from 'node:crypto'
-import { DEFAULTS } from './settings.mjs'
+import { DEFAULTS, FORMATS, withSeeds } from './settings.mjs'
 
 export const MODES = ['enhanced', 'official', 'off']
-export const ENGINES = ['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http']
-const TEXT_LIMITS = { apiKey: 512, voiceId: 160, modelId: 120, languageCode: 2, instructions: 2000 }
-const NUMBER_RULES = { guidanceScale: [1, 10], timeoutSeconds: [10, 600], retryDelaySeconds: [0, 10] }
-const ORIGINAL_TEXT = { voice: 160, rate: 20, pitch: 20 }
-const GROUPS = {
-  cosyvoice: { text: { url: 2048, spkId: 160, instruct: 2000 }, numbers: { sampleRate: [8000, 96000] }, enums: { mode: ['sft', 'instruct'] } },
-  gptsovits: { text: { url: 2048, refAudio: 4096, promptText: 4000, textLang: 20, promptLang: 20 } },
-  http: { text: { urlTemplate: 4096, headers: 16000, body: 16000 }, numbers: { sampleRate: [8000, 96000] }, enums: { method: ['GET', 'POST'] } },
-}
-const EMOTION_KEYS = ['calm', 'playful', 'down', 'angry', 'excited', 'proud', 'whiny', 'lazy']
-const EMOTION_LEGS = ['breezeblue', 'builtin']
-const DEFAULT_EMOTION_ROUTING = Object.fromEntries(EMOTION_KEYS.map(key => [key, 'breezeblue']))
-const DEFAULT_EMOTION_ROW = { instructions: '', guidance: 'follow' }
-const DEFAULT_AROUSAL = { L: 2, M: 4, H: 6 }
-
-function emotionTable(raw, current) {
-  const base = object(current) ? current : {}
-  const out = {}
-  for (const key of EMOTION_KEYS) {
-    const row = object(raw?.[key]) ? raw[key] : base[key] || DEFAULT_EMOTION_ROW
-    const guidance = row.guidance === undefined || row.guidance === 'follow' ? 'follow' : number(row.guidance, [1, 10], '情绪 guidance')
-    out[key] = { instructions: string(row.instructions ?? '', 2000, '情绪指令'), guidance }
-  }
-  return out
-}
-function arousalTable(raw, current) {
-  const base = object(current) ? current : DEFAULT_AROUSAL
-  const out = {}
-  for (const key of ['L', 'M', 'H']) out[key] = number(object(raw) && raw[key] !== undefined ? raw[key] : (base[key] ?? DEFAULT_AROUSAL[key]), [1, 10], '唤醒度 guidance')
-  return out
-}
+function fail(m) { throw new Error(m) }
 const object = v => v && typeof v === 'object' && !Array.isArray(v)
-function fail(message) { throw new Error(message) }
-function string(v, max, key) {
-  if (typeof v !== 'string' || Array.from(v).length > max) fail(`${key} 格式错误或超过 ${max} 字符。`)
-  return v.trim()
-}
-function number(v, range, key) {
-  if (typeof v !== 'number' || !Number.isFinite(v) || v < range[0] || v > range[1]) fail(`${key} 必须在 ${range.join('–')} 之间。`)
-  return v
-}
+function str(v, max, key) { if (typeof v !== 'string' || Array.from(v).length > max) fail(`${key} 格式错误或超过 ${max} 字符。`); return v.trim() }
+function num(v, range, key) { if (typeof v !== 'number' || !Number.isFinite(v) || v < range[0] || v > range[1]) fail(`${key} 必须在 ${range.join('–')} 之间。`); return v }
+function bool(v, key) { if (typeof v !== 'boolean') fail(`${key} 必须是开关值。`); return v }
 function choice(v, allowed, key) { if (!allowed.includes(v)) fail(`${key} 选项无效。`); return v }
-
-function emotionRouting(raw, current, endpointIds) {
-  const out = { ...current }
-  for (const [key, value] of Object.entries(object(raw) ? raw : fail('情绪路由格式无效。'))) {
-    if (!EMOTION_KEYS.includes(key)) fail('不支持的情绪键：' + key)
-    out[key] = choice(value, [...EMOTION_LEGS, ...endpointIds], '情绪路由')
-  }
-  return out
-}
-function emotionEndpoint(raw, current, id) {
-  if (!object(raw)) fail('情绪端点格式无效。')
-  const name = string(raw.name, 24, '端点名称')
-  if (!name) fail('端点名称不能为空。')
-  const method = choice(raw.method || 'GET', ['GET', 'POST'], '端点方式')
-  const urlTemplate = string(raw.urlTemplate, 2048, '端点地址')
-  if (!/^https?:\/\//.test(urlTemplate)) fail('端点地址需以 http(s):// 开头。')
-  const body = raw.body === undefined ? (current?.body ?? '') : string(raw.body, 16000, '端点请求体')
-  const headers = raw.headers === undefined || raw.headers === '' ? (current?.headers ?? '') : raw.headers === null ? '' : string(raw.headers, 16000, '端点请求头')
-  return { id, name, method, urlTemplate, body, headers }
-}
-function emotionPreset(raw, current, endpointIds) {
-  if (!object(raw)) fail('情绪预设格式无效。')
-  const name = string(raw.name, 24, '预设名称')
-  if (!name) fail('预设名称不能为空。')
-  const voiceId = string(raw.voiceId ?? (current?.voiceId ?? ''), 160, '预设 Voice ID')
-  if (voiceId && !/^[A-Za-z0-9_-]+$/.test(voiceId)) fail('预设 Voice ID 格式错误。')
-  return {
-    name, voiceId,
-    routing: emotionRouting(object(raw.routing) ? raw.routing : current?.routing || DEFAULT_EMOTION_ROUTING, DEFAULT_EMOTION_ROUTING, endpointIds),
-    emotions: emotionTable(raw.emotions, current?.emotions),
-    arousal: arousalTable(raw.arousal, current?.arousal),
-  }
-}
-export function emotionPatch(raw, current) {
-  const base = { routing: {}, endpoints: [], templates: [], ...(object(current) ? current : {}) }
-  const endpoints = []
-  const ids = new Set()
-  const rawEndpoints = object(raw) ? raw.endpoints : base.endpoints
-  const items = Array.isArray(rawEndpoints) ? rawEndpoints : base.endpoints
-  for (const item of items) {
-    const id = typeof item?.id === 'string' && /^e[0-9]{1,3}$/.test(item.id) ? item.id : 'e' + (endpoints.length + 1)
-    if (ids.has(id)) fail('端点序号重复。')
-    ids.add(id)
-    endpoints.push(emotionEndpoint(item, base.endpoints.find(e => e.id === id), id))
-  }
-  if (endpoints.length > 12) fail('情绪端点最多 12 个。')
-  const names = new Set()
-  for (const e of endpoints) { if (names.has(e.name)) fail('端点名称重复。'); names.add(e.name) }
-  const endpointIds = endpoints.map(e => e.id)
-  const routing = emotionRouting(object(raw) ? object(raw.routing) ? raw.routing : base.routing : base.routing, base.routing, endpointIds)
-  const templates = []
-  const rawTemplates = object(raw) ? raw.templates : base.templates
-  const tpls = Array.isArray(rawTemplates) ? rawTemplates : base.templates
-  for (const t of tpls) {
-    templates.push(emotionPreset(t, base.templates.find(x => x?.name === t?.name), endpointIds))
-  }
-  if (templates.length > 10) fail('情绪预设最多 10 个。')
-  return { endpoints, routing, templates, emotions: emotionTable(object(raw) ? raw.emotions : undefined, base.emotions), arousal: arousalTable(object(raw) ? raw.arousal : undefined, base.arousal) }
-}
-function maskedEmotion(ext) {
-  const emo = object(ext?.emotion) ? ext.emotion : {}
-  const epList = Array.isArray(emo.endpoints) ? emo.endpoints : []
-  const tplList = Array.isArray(emo.templates) ? emo.templates : []
-  return {
-    routing: { ...DEFAULT_EMOTION_ROUTING, ...(object(emo.routing) ? emo.routing : {}) },
-    endpoints: epList.filter(object).map(e => ({ ...e, headers: '', headersSet: Boolean(e.headers) })),
-    templates: tplList.filter(object),
-    emotions: emotionTable(object(emo.emotions) ? emo.emotions : {}, object(emo.emotions) ? emo.emotions : {}),
-    arousal: arousalTable(object(emo.arousal) ? emo.arousal : {}, object(emo.arousal) ? emo.arousal : {}),
-  }
-}
-
-export function extensionPatch(raw, current) {
-  if (!object(raw)) fail('设置格式无效。')
-  const patch = {}
-  for (const [key, value] of Object.entries(raw)) {
-    if (Object.hasOwn(TEXT_LIMITS, key)) {
-      if (key === 'apiKey' && (value === '' || value === undefined)) continue // masked blank means keep
-      if (key === 'apiKey' && value === null) { patch.apiKey = ''; continue }
-      const text = string(value, TEXT_LIMITS[key], key)
-      if (key === 'apiKey' && /[^\x21-\x7e]/.test(text)) fail('Key 不应包含空格或控制字符。')
-      if (key === 'voiceId' && text && !/^[A-Za-z0-9_-]+$/.test(text)) fail('Voice ID 格式错误。')
-      if (key === 'modelId' && text && !/^[A-Za-z0-9._-]+$/.test(text)) fail('模型 ID 格式错误。')
-      if (key === 'languageCode' && text && !/^[A-Za-z]{2}$/.test(text)) fail('语言代码请留空或填写 zh / en。')
-      patch[key] = key === 'languageCode' ? text.toLowerCase() : text
-    } else if (Object.hasOwn(NUMBER_RULES, key)) patch[key] = number(value, NUMBER_RULES[key], key)
-    else if (key === 'retryCount') {
-      const retries = number(value, [0, 5], key)
-      if (!Number.isInteger(retries)) fail('重试次数必须是 0–5 的整数。')
-      patch[key] = retries
-    } else if (key === 'provider') patch[key] = choice(value, ['builtin', 'breezeblue', 'emotion'], key)
-    else if (key === 'outputFormat') patch[key] = choice(value, ['wav', 'wav_24000', 'mp3', 'mp3_24000_64', 'mp3_24000_96', 'mp3_24000_128', 'mp3_24000_160'], key)
-    else if (key === 'emotion') patch[key] = emotionPatch(value, current?.emotion)
-    else if (key === 'speakerBoost' || key === 'fallback' || key === 'promptTags') {
-      if (typeof value !== 'boolean') fail(`${key} 必须是开关值。`)
-      patch[key] = value
-    } else fail('请求包含不支持的增强语音设置。')
-  }
-  return { ...current, ...patch }
-}
-
-export function originalPatch(raw, current) {
-  if (!object(raw)) fail('原引擎设置格式无效。')
-  const out = { ...current }
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === 'engine') out[key] = choice(value, ENGINES, key)
-    else if (Object.hasOwn(ORIGINAL_TEXT, key)) out[key] = string(value, ORIGINAL_TEXT[key], key)
-    else if (Object.hasOwn(GROUPS, key)) {
-      if (!object(value)) fail('引擎参数格式无效。')
-      const schema = GROUPS[key], group = { ...current?.[key] }
-      for (const [field, val] of Object.entries(value)) {
-        if (Object.hasOwn(schema.text || {}, field)) {
-          if (key === 'http' && field === 'headers' && val === '') continue
-          group[field] = key === 'http' && field === 'headers' && val === null ? '' : string(val, schema.text[field], field)
-        } else if (Object.hasOwn(schema.numbers || {}, field)) group[field] = number(val, schema.numbers[field], field)
-        else if (Object.hasOwn(schema.enums || {}, field)) group[field] = choice(val, schema.enums[field], field)
-        else fail('请求包含不支持的引擎参数。')
-      }
-      out[key] = group
-    } else fail('只能修改语音引擎相关配置。')
-  }
-  return out
-}
+const ENGINE_TYPES = ['breeze', 'gptsovits']
 
 export function requestedMode(cfg) {
   if (cfg.modules?.voice?.enabled === false || cfg.voice?.enabled === false) return 'off'
   return cfg.modules?.voice?.useBuiltin === true ? 'official' : 'enhanced'
 }
-
 export function modeConfig(cfg, mode) {
   choice(mode, MODES, '语音模式')
   if (cfg.safeMode && mode === 'enhanced') fail('安全模式仍开启，请先在「已安装」关闭安全模式。')
@@ -181,45 +22,119 @@ export function modeConfig(cfg, mode) {
     modules: { ...cfg.modules, voice: { ...cfg.modules?.voice, enabled: mode !== 'off',
       ...(mode === 'off' ? {} : { useBuiltin: mode === 'official' }) } } }
 }
-
 export function revision(cfg) {
-  return createHash('sha256').update(JSON.stringify({ ext: cfg.ext?.['breeze-settings'], voice: cfg.voice, module: cfg.modules?.voice, safe: cfg.safeMode })).digest('hex')
+  return createHash('sha256').update(JSON.stringify({ ext: cfg.ext?.['breeze-settings'], voice: cfg.voice?.enabled, module: cfg.modules?.voice, safe: cfg.safeMode })).digest('hex')
+}
+
+function engineRow(raw, current) {
+  if (!object(raw)) fail('引擎格式无效。')
+  const id = typeof raw.id === 'string' && /^e[0-9a-z]{1,24}$/i.test(raw.id) ? raw.id : (current?.id || fail('引擎 id 缺失。'))
+  const name = str(raw.name, 24, '引擎名称'); if (!name) fail('引擎名称不能为空。')
+  const type = choice(raw.type || current?.type || 'breeze', ENGINE_TYPES, '引擎类型')
+  const base = str(raw.base ?? current?.base ?? '', 2048, '服务地址'); if (!/^https?:\/\//.test(base)) fail('服务地址需以 http(s):// 开头。')
+  const out = { id, name, type, base, addedAt: str(raw.addedAt ?? current?.addedAt ?? '', 24, '添加时间') }
+  if (type === 'breeze') {
+    const voiceId = str(raw.voiceId ?? current?.voiceId ?? '', 160, 'Voice ID'); if (!/^[A-Za-z0-9_-]{1,160}$/.test(voiceId)) fail('Voice ID 格式错误。')
+    out.voiceId = voiceId
+    out.promptTags = raw.promptTags === undefined ? (current?.promptTags ?? true) : bool(raw.promptTags, '情绪标记提示词')
+  }
+  return out
+}
+function emotionRow(raw, current) {
+  if (!object(raw)) fail('情绪格式无效。')
+  const name = str(raw.name, 24, '情绪名称'); if (!name) fail('情绪名称不能为空。')
+  const code = str(raw.code, 20, '情绪代号'); if (!/^[a-z][a-z0-9_-]{0,19}$/.test(code)) fail('情绪代号格式错误。')
+  const engine = raw.engine === undefined ? (current?.engine ?? null) : (raw.engine === null || raw.engine === '' ? null : str(raw.engine, 40, '情绪引擎'))
+  const instructions = str(raw.instructions ?? current?.instructions ?? '', 2000, '情绪指令')
+  const strength = raw.strength === undefined ? (current?.strength ?? 'model')
+    : raw.strength === 'model' ? 'model' : typeof raw.strength === 'number' ? num(raw.strength, [1, 10], '强度') : str(raw.strength, 24, '强度')
+  const r = object(raw.ref) ? raw.ref : current?.ref || {}
+  const ref = { mode: choice(r.mode ?? current?.ref?.mode ?? 'none', ['none', 'path', 'param'], '参考配置'),
+    path: str(r.path ?? current?.ref?.path ?? '', 4096, '音频路径'), text: str(r.text ?? current?.ref?.text ?? '', 4000, '音频文字'), param: str(r.param ?? current?.ref?.param ?? '', 80, '参考参数') }
+  return { name, code, builtin: Boolean(raw.builtin ?? current?.builtin ?? false), engine, instructions, strength, ref }
+}
+function strengthRow(raw, current) {
+  if (!object(raw)) fail('强度档格式无效。')
+  const id = typeof raw.id === 'string' && /^[a-z0-9]{1,24}$/i.test(raw.id) ? raw.id : (current?.id || fail('强度档 id 缺失。'))
+  const name = str(raw.name, 12, '强度名称'); if (!name) fail('强度名称不能为空。')
+  const value = num(raw.value ?? current?.value, [1, 10], '强度 guidance')
+  return { id, name, value, builtin: Boolean(raw.builtin ?? current?.builtin ?? false) }
+}
+function presetRow(raw, current, engineIds) {
+  if (!object(raw)) fail('预设格式无效。')
+  const name = str(raw.name, 24, '预设名称'); if (!name) fail('预设名称不能为空。')
+  const r = object(raw.route) ? raw.route : current?.route || {}
+  const emotions = [].concat(Array.isArray(r.emotions) ? r.emotions : []).map(x => emotionRow(x, null))
+  if (emotions.length > 24) fail('预设内情绪最多 24 个。')
+  const strengths = [].concat(Array.isArray(r.strengths) ? r.strengths : []).map(x => strengthRow(x, null))
+  if (strengths.length > 12) fail('预设内强度档最多 12 个。')
+  return { name, route: { emotions, strengths } }
+}
+function advancedPatch(raw, current) {
+  const base = { ...DEFAULTS, ...(object(current) ? current : {}) }
+  const r = object(raw) ? raw : {}
+  return {
+    outputFormat: choice(r.outputFormat ?? base.outputFormat, FORMATS, '输出格式'),
+    timeoutSeconds: num(r.timeoutSeconds ?? base.timeoutSeconds, [10, 600], '请求超时'),
+    fallback: bool(r.fallback ?? base.fallback, '失败回退'),
+    retryCount: typeof r.retryCount === 'number' ? num(r.retryCount, [0, 5], '重试次数') : base.retryCount,
+    retryDelaySeconds: typeof r.retryDelaySeconds === 'number' ? num(r.retryDelaySeconds, [0, 10], '重试间隔') : base.retryDelaySeconds,
+    speakerBoost: bool(r.speakerBoost ?? base.speakerBoost, '音色相似度增强'),
+  }
+}
+function keyOf(list, id, key) { return list.find(x => x[key] === id) }
+
+export function saveConsole(api, body) {
+  if (!object(body) || Object.keys(body).some(k => !['revision', 'engines', 'emotions', 'strengths', 'presets', 'advanced'].includes(k))) fail('保存请求格式无效。')
+  if (typeof body.revision !== 'string' || body.revision !== revision(api.config())) fail('配置已在其他页面变更。请刷新后重新编辑，避免覆盖。')
+  const prev = withSeeds({ ...api.config().ext?.['breeze-settings'] })
+  const engines = []
+  const eids = new Set()
+  for (const raw of [].concat(Array.isArray(body.engines) ? body.engines : prev.engines)) {
+    const e = engineRow(raw, keyOf(prev.engines, raw?.id, 'id'))
+    if (eids.has(e.id)) fail('引擎 id 重复。'); eids.add(e.id); engines.push(e)
+  }
+  if (engines.length > 12) fail('引擎最多 12 个。')
+  const enames = new Set()
+  for (const e of engines) { if (enames.has(e.name)) fail('引擎名称重复。'); enames.add(e.name) }
+  const engineIds = engines.map(e => e.id)
+  const emotions = []
+  const codes = new Set()
+  for (const raw of [].concat(Array.isArray(body.emotions) ? body.emotions : prev.emotions)) {
+    const e = emotionRow(raw, keyOf(prev.emotions, raw?.code, 'code'))
+    if (codes.has(e.code)) fail('情绪代号重复。'); codes.add(e.code)
+    if (e.engine && !engineIds.includes(e.engine)) fail('情绪挂载了不存在的引擎。')
+    emotions.push(e)
+  }
+  if (emotions.length > 24) fail('情绪最多 24 个。')
+  const strengths = []
+  const sids = new Set()
+  for (const raw of [].concat(Array.isArray(body.strengths) ? body.strengths : prev.strengths)) {
+    const s = strengthRow(raw, keyOf(prev.strengths, raw?.id, 'id'))
+    if (sids.has(s.id)) fail('强度档 id 重复。'); sids.add(s.id); strengths.push(s)
+  }
+  if (strengths.length > 12) fail('强度档最多 12 个。')
+  const presets = []
+  const pnames = new Set()
+  for (const raw of [].concat(Array.isArray(body.presets) ? body.presets : prev.presets)) {
+    const p = presetRow(raw, keyOf(prev.presets, raw?.name, 'name'), engineIds)
+    if (pnames.has(p.name)) fail('预设名称重复。'); pnames.add(p.name); presets.push(p)
+  }
+  if (presets.length > 10) fail('预设最多 10 套。')
+  const advanced = advancedPatch(body.advanced, prev.advanced)
+  api.setConfig(cfg => ({ ...cfg, ext: { ...cfg.ext, 'breeze-settings': { engines, emotions, strengths, presets, advanced } } }))
+  return consoleState(api)
 }
 
 export function consoleState(api) {
   const cfg = api.config()
-  const saved = api.settings()
-  const ext = Object.fromEntries(Object.entries(DEFAULTS).map(([key, value]) => [key, saved[key] ?? value]))
-  const rec = api.core.modules?.status?.().find(m => m.id === 'voice')
-  const desired = requestedMode(cfg)
-  const running = rec?.running || null
-  const actual = !running || cfg.voice?.enabled === false ? 'off' : running === 'builtin' ? 'official' : 'enhanced'
-  const voice = cfg.voice || {}
-  const original = { engine: voice.engine || 'auto', voice: voice.voice || '', rate: voice.rate || '+0%', pitch: voice.pitch || '+0Hz' }
-  for (const group of Object.keys(GROUPS)) {
-    original[group] = {}
-    for (const field of [...Object.keys(GROUPS[group].text || {}), ...Object.keys(GROUPS[group].numbers || {}), ...Object.keys(GROUPS[group].enums || {})]) {
-      if (voice[group]?.[field] !== undefined) original[group][field] = voice[group][field]
-    }
+  const ext = withSeeds({ ...(object(cfg.ext?.['breeze-settings']) ? cfg.ext['breeze-settings'] : {}) })
+  return {
+    ok: true, revision: revision(cfg),
+    engines: [].concat(ext.engines).map(e => ({ ...e, apiKey: '', apiKeySet: Boolean(e.apiKey) })),
+    emotions: [].concat(ext.emotions),
+    strengths: [].concat(ext.strengths),
+    presets: [].concat(ext.presets),
+    advanced: advancedPatch(ext.advanced, ext.advanced),
   }
-  original.http.headersSet = Boolean(original.http.headers)
-  original.http.headers = ''
-  return { ok: true, revision: revision(cfg), requestedMode: desired, actualMode: actual, running,
-    fallback: Boolean(rec?.fallback), safeMode: Boolean(cfg.safeMode),
-    moduleError: typeof rec?.error === 'string' ? rec.error.replace(/brz_[A-Za-z0-9_-]+/g, '[已隐藏]').slice(0, 220) : '',
-    settings: { ...ext, apiKey: '', apiKeySet: Boolean(ext.apiKey), emotion: maskedEmotion(ext) }, original,
-    localTtsActive: Boolean(api.core.local?.active?.('tts')),
-    rvcVoice: voice.songVoice || '',
-    enhancedAvailable: Boolean(rec?.hasUser),
-  }
-}
-
-export function saveConsole(api, body) {
-  if (!object(body) || Object.keys(body).some(k => !['revision', 'settings', 'original'].includes(k))) fail('保存请求格式无效。')
-  if (typeof body.revision !== 'string' || body.revision !== revision(api.config())) fail('配置已在其他页面变更。请刷新后重新编辑，避免覆盖。')
-  api.setConfig(cfg => ({ ...cfg,
-    ext: { ...cfg.ext, 'breeze-settings': extensionPatch(body.settings || {}, cfg.ext?.['breeze-settings'] || {}) },
-    voice: originalPatch(body.original || {}, cfg.voice || {}),
-  }))
-  return consoleState(api)
 }

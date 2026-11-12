@@ -8,7 +8,7 @@ import { createModules } from '../upstream/src/core/modules.js'
 import builtinVoice from '../upstream/src/modules/voice/index.js'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const release = join(root, 'dist', 'aurabot-breezeblue-voice-1.4.0')
+const release = join(root, 'dist', 'aurabot-breezeblue-voice-1.4.1')
 const isolated = mkdtempSync(join(root, 'artifacts', 'release-fixture-'))
 const modulesDir = join(isolated, 'modules')
 mkdirSync(modulesDir)

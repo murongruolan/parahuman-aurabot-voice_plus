@@ -1,100 +1,136 @@
 // Self-contained official user-module panel. Scoped CSS only; no host DOM changes.
-const { useState, useEffect, useRef } = React
-const modeNames = { enhanced: '增强语音', official: '官方语音', off: '关闭语音' }
-const engines = [['auto', '自动（edge / Windows）'], ['edge', '微软 edge-tts'], ['windows', 'Windows 自带'], ['cosyvoice', '本地 CosyVoice'], ['gptsovits', '本地 GPT-SoVITS'], ['http', '其他 HTTP 接口']]
-const EMOTION_LIST = [['calm', '平静'], ['playful', '俏皮'], ['down', '失落'], ['angry', '生气'], ['excited', '兴奋'], ['proud', '得意'], ['whiny', '娇嗔'], ['lazy', '慵懒']]
-const DEFAULT_ROUTING = { calm: 'breezeblue', playful: 'breezeblue', down: 'breezeblue', angry: 'breezeblue', excited: 'breezeblue', proud: 'breezeblue', whiny: 'breezeblue', lazy: 'breezeblue' }
-const DEFAULT_AROUSAL = { L: 2, M: 4, H: 6 }
-const EMOTION_HINT = { down: '语气失落、低沉，情绪蔫蔫的', excited: '语气兴奋、雀跃，情绪高昂', lazy: '语气慵懒、慢悠悠，有点提不起劲' }
-const canonEndpoint = x => ({ id: x?.id, name: x?.name || '', method: x?.method || 'GET', urlTemplate: x?.urlTemplate || '', body: x?.body || '', headers: x?.headers || '' })
-const canonEmotions = t => { const base = (t?.emotions || {}); return Object.fromEntries(EMOTION_LIST.map(([k]) => { const row = base[k] || {}; return [k, { instructions: row.instructions || '', guidance: row.guidance === undefined || row.guidance === 'follow' || row.guidance === '' ? 'follow' : Number(row.guidance) }] })) }
-const emoOf = r => { const e = r?.emotion || {}; return {
-  routing: { ...DEFAULT_ROUTING, ...(e.routing || {}) },
-  endpoints: (e.endpoints || []).map(canonEndpoint),
-  templates: (e.templates || []).map(t => ({ name: t?.name || '', voiceId: t?.voiceId || '', routing: { ...DEFAULT_ROUTING, ...(t?.routing || {}) }, emotions: canonEmotions(t), arousal: { ...DEFAULT_AROUSAL, ...((t?.arousal) || {}) } })),
-  emotions: canonEmotions(e),
-  arousal: { ...DEFAULT_AROUSAL, ...((e?.arousal) || {}) },
-} }
+// 1.4.1：情绪引擎单页 —— 引擎配置（上）+ 情绪路由（下）+ 提示词预览；图标为内嵌 SVG，不依赖外部库。
+const ICON_PATHS = {
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  sliders: '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
+  trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+}
+const icon = n => ({ dangerouslySetInnerHTML: { __html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15" aria-hidden="true">' + (ICON_PATHS[n] || '') + '</svg>' } })
 const css = `
-.vp{--vp-line:var(--ab-line,#dce3eb);--vp-card:var(--ab-card,#fff);--vp-text:var(--ab-text,#253247);--vp-muted:var(--ab-muted,#69768a);--vp-accent:#317096;color:var(--vp-text);grid-column:1/-1;max-width:1160px;width:100%;margin:0 auto;font-size:14px;line-height:1.55}
-.vp *{box-sizing:border-box}.vp h2,.vp h3,.vp p{margin:0}.vp button,.vp input,.vp textarea,.vp select{font:inherit}.vp button{cursor:pointer}.vp button:disabled{opacity:.48;cursor:not-allowed}.vp :focus-visible{outline:3px solid #4b9bc5;outline-offset:3px}
-.vp-head{display:flex;justify-content:space-between;gap:16px;align-items:center;margin:4px 0 20px}.vp-head h2{font-size:25px;letter-spacing:-.6px}.vp-sub{color:var(--vp-muted);font-size:13px;margin-top:5px!important}.vp-badge{border:1px solid var(--vp-line);border-radius:20px;padding:6px 12px;white-space:nowrap;font-size:12px}
-.vp-modes{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px}.vp-mode{border:1px solid var(--vp-line);border-radius:12px;background:var(--vp-card);color:inherit;padding:14px 16px;text-align:left}.vp-mode strong{display:block;font-weight:650}.vp-mode span{display:block;color:var(--vp-muted);font-size:12px;margin-top:3px}.vp-mode[aria-checked=true]{border-color:var(--vp-accent);box-shadow:inset 0 0 0 1px var(--vp-accent)}
-.vp-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(280px,1fr);gap:18px;align-items:start}.vp-card{background:var(--vp-card);border:1px solid var(--vp-line);border-radius:14px;padding:21px}.vp-card h3{font-size:16px}.vp-card+.vp-card{margin-top:16px}.vp-side{position:sticky;top:14px}
-.vp-tabs{display:flex;gap:6px;padding:5px;background:var(--ab-card-2,rgba(110,135,159,.08));border-radius:9px;margin:0 0 20px}.vp-tab{flex:1;border:0;background:transparent;color:var(--vp-muted);padding:9px 8px;border-radius:7px}.vp-tab[aria-selected=true]{background:var(--vp-card);box-shadow:0 1px 4px #0001;color:var(--vp-text);font-weight:600}
-.vp-fields{display:grid;grid-template-columns:1fr 1fr;gap:15px}.vp-field{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:13px}.vp-field.wide{grid-column:1/-1}.vp-field>span{font-weight:550}.vp-input{width:100%;border:1px solid var(--vp-line);border-radius:8px;color:var(--vp-text);background:var(--ab-card-2,transparent);padding:9px 11px;min-width:0}.vp-input[readonly]{color:var(--vp-muted)}.vp-input::placeholder{color:var(--vp-muted);opacity:.75}textarea.vp-input{min-height:88px;resize:vertical}
-.vp-hint{font-size:12px;color:var(--vp-muted)}.vp-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.vp-row.grow>*:first-child{flex:1;min-width:140px}.vp-btn{border:1px solid var(--vp-line);border-radius:8px;padding:8px 13px;background:var(--vp-card);color:inherit;white-space:nowrap}.vp-btn.primary{background:var(--vp-accent);color:white;border-color:var(--vp-accent)}.vp-btn.small{font-size:12px;padding:6px 10px}.vp-divider{height:1px;background:var(--vp-line);margin:18px 0}.vp-details{margin-top:19px;border-top:1px solid var(--vp-line);padding-top:13px}.vp-details summary{cursor:pointer;font-size:13px;font-weight:550}.vp-details .vp-fields{margin-top:15px}.vp-toggle{display:flex;align-items:flex-start;gap:9px;font-size:13px}.vp-toggle input{margin-top:4px;accent-color:var(--vp-accent)}
-.vp-note{padding:10px 13px;border-radius:8px;border:1px solid var(--vp-line);margin-bottom:14px!important;font-size:13px;background:var(--ab-card-2,transparent)}.vp-note.warn{border-color:#a17a3680}.vp-note.err{border-color:#b85d6580;color:var(--ab-danger,#ba4a54)}.vp-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:18px}.vp-picker{border:1px solid var(--vp-line);padding:12px;border-radius:10px;margin:14px 0}.vp-picker select{margin-top:9px}.vp-preview{margin-top:15px}.vp-preview audio{width:100%;margin:12px 0 6px}.vp-side p{margin-top:10px}.vp-guide{padding-left:18px;margin:12px 0 0;color:var(--vp-muted);font-size:13px}.vp-guide li+li{margin-top:7px}.vp-info{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--vp-line);font-size:12px}.vp-info span:first-child{color:var(--vp-muted)}.vp a{color:var(--vp-accent)}
-@media(max-width:760px){.vp-grid{grid-template-columns:1fr}.vp-side{position:static}.vp-card{padding:16px}.vp-head{align-items:flex-start}.vp-modes{gap:6px}.vp-mode{padding:10px}.vp-mode span{font-size:11px}.vp-fields{grid-template-columns:1fr}.vp-field.wide{grid-column:auto}.vp-footer{flex-wrap:wrap}}
+.vp{--vp-line:#dce3eb;--vp-card:#fff;--vp-text:#253247;--vp-muted:#69768a;--vp-accent:#317096;color:var(--vp-text);grid-column:1/-1;max-width:980px;width:100%;margin:0 auto;font-size:14px;line-height:1.55;position:relative}
+.vp *{box-sizing:border-box}.vp h2,.vp h3,.vp p{margin:0}.vp button,.vp input,.vp textarea,.vp select{font:inherit}
+.vp button{cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:none;white-space:nowrap}
+.vp button:disabled{opacity:.45;cursor:not-allowed}
+.vp :focus-visible{outline:2px solid #7fb3ee;outline-offset:1px}
+.vp .icon{display:inline-flex}.vp .icon svg{width:15px;height:15px}
+.vp-head{display:flex;justify-content:space-between;align-items:center;gap:14px;margin:4px 0 2px}
+.vp-head h2{font-size:22px;letter-spacing:-.4px}.vp-sub{color:var(--vp-muted);font-size:13px;margin-top:4px}
+.vp-badge{border:1px solid var(--vp-line);border-radius:20px;padding:5px 12px;white-space:nowrap;font-size:12px;background:var(--vp-card)}
+.vp-card{background:var(--vp-card);border:1px solid var(--vp-line);border-radius:14px;padding:18px 20px;margin-top:16px}
+.vp-h3{display:flex;align-items:center;gap:10px;margin-bottom:4px}.vp-h3 h3{font-size:16px;flex:none}
+.vp-hint{color:var(--vp-muted);font-size:12px;margin:6px 0 0}
+.vp-btn{border:1px solid var(--vp-line);background:var(--vp-card);color:var(--vp-text);border-radius:8px;padding:7px 13px;font-size:14px}
+.vp-btn:hover{border-color:#b9c6d6}.vp-btn.primary{background:var(--vp-accent);color:#fff;border-color:var(--vp-accent)}
+.vp-btn.small{padding:5px 10px;font-size:12px}.vp-btn.ghost{background:transparent;border-color:transparent;color:var(--vp-muted)}
+.vp-btn.danger{color:#b3454f}.vp-btn:disabled{opacity:.45;cursor:not-allowed}
+.vp-input,.vp-select,.vp-textarea{width:100%;border:1px solid var(--vp-line);border-radius:8px;padding:8px 10px;font:inherit;color:var(--vp-text);background:#fff;min-width:0}
+.vp-textarea{min-height:64px;resize:vertical}
+.vp-input:focus,.vp-select:focus,.vp-textarea:focus{outline:2px solid #7fb3ee;outline-offset:1px}
+.vp-label{display:block;font-size:12px;color:#4a5871;margin:10px 0 4px}
+.vp-check{display:flex;align-items:center;gap:8px;font-size:13px;margin-top:12px;cursor:pointer}
+.vp-table-wrap{overflow-x:auto}
+.vp-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+.vp-table th{text-align:left;color:var(--vp-muted);font-weight:400;padding:8px 10px;border-bottom:1px solid var(--vp-line);white-space:nowrap}
+.vp-table td{padding:10px;border-bottom:1px solid #eef1f6;vertical-align:middle}
+.vp-table tr:last-child td{border-bottom:0}
+.vp-badge2{display:inline-block;border-radius:6px;padding:2px 8px;font-size:12px;background:#eef3fa;color:var(--vp-accent);white-space:nowrap}
+.vp-badge2.gray{background:#f0f2f6;color:var(--vp-muted)}.vp-badge2.green{background:#e8f4ec;color:#237a3c}
+.vp-emo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:12px}
+.vp-emo-card{border:1px solid var(--vp-line);border-radius:12px;padding:12px 14px;background:#fbfcfe}
+.vp-emo-top{display:flex;align-items:baseline;gap:8px}.vp-emo-top b{font-size:15px}
+.vp-emo-code{color:#9aa7b8;font-size:12px;font-family:ui-monospace,Consolas,monospace}
+.vp-emo-off{color:#b3454f;font-size:12px;margin-left:auto}
+.vp-emo-fields{margin-top:8px;display:grid;gap:8px}
+.vp-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.vp-row>*{min-width:0}
+.vp-tabs-wrap{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
+.vp-tabs-label{flex:none;color:var(--vp-muted);font-size:13px}
+.vp-tabs{display:flex;gap:6px;overflow-x:auto;min-width:0;padding-bottom:2px;scrollbar-width:thin}
+.vp-tab2{flex:none;border:1px solid var(--vp-line);background:var(--vp-card);border-radius:16px;padding:4px 12px;font-size:12px;color:#4a5871}
+.vp-tab2.on{background:var(--vp-accent);color:#fff;border-color:var(--vp-accent)}
+.vp-hint-row{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+.vp-hint-row .grow{flex:1 1 60px}.vp-hint-row .vp-hint{margin:0}
+.vp-rail{position:absolute;right:14px;top:100px;display:flex;flex-direction:column;gap:10px;z-index:5}
+.vp-rail button{display:flex;flex-direction:column;align-items:center;gap:4px;width:64px;padding:10px 4px;border:1px solid var(--vp-line);border-radius:12px;background:var(--vp-card);font-size:12px;color:var(--vp-text)}
+.vp-rail button:hover{border-color:var(--vp-accent);color:var(--vp-accent)}
+.vp-mask{position:absolute;inset:0;background:rgba(37,50,71,.42);border-radius:14px;display:flex;align-items:flex-start;justify-content:center;padding:40px 12px;z-index:20}
+.vp-modal{background:var(--vp-card);border-radius:14px;padding:18px 20px;width:440px;max-width:100%;max-height:540px;overflow:auto;box-shadow:0 18px 50px rgba(0,0,0,.18)}
+.vp-modal h3{margin:0;font-size:16px}.vp-modal .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.vp-voice-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--vp-line);border-radius:8px;margin-top:8px;font-size:13px}
+.vp-st-row{display:grid;grid-template-columns:1fr 110px auto;gap:8px;align-items:center;margin-top:8px}
+.vp-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:#2b3648;color:#fff;border-radius:10px;padding:9px 16px;font-size:13px;z-index:40;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.vp-note{padding:10px 13px;border-radius:10px;border:1px solid var(--vp-line);margin:12px 0 0;font-size:12px;background:#f6f8fb}
+.vp-note.err{border-color:#e3b9bf;background:#fbeef0;color:#b3454f}
+.vp-note.warn{border-color:#a17a3660;color:#8a6414}
+.vp-pp{margin:12px 0 0;background:#f6f8fb;border:1px solid var(--vp-line);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.7;color:#3c4a63;overflow:auto;font-family:ui-monospace,Consolas,monospace;white-space:pre-wrap}
+.vp-spin{width:24px;height:24px;border:3px solid var(--vp-line);border-top-color:var(--vp-accent);border-radius:50%;margin:28px auto 10px;animation:vp141spin .8s linear infinite}
+@keyframes vp141spin{to{transform:rotate(360deg)}}
+.vp-err{background:#fbeef0;border:1px solid #e3b9bf;color:#b3454f;border-radius:10px;padding:10px 12px;font-size:13px;margin-top:10px}
+.vp-refbox{border:1px dashed #c3d2e2;border-radius:10px;padding:10px 12px;display:grid;gap:8px;background:#fff}
+@media (max-width:760px){
+  .vp-rail{position:static;flex-direction:row;justify-content:center;margin:14px auto 0}
+  .vp-modal{width:100%}.vp-emo-grid{grid-template-columns:1fr}
+}
 `
+const cssNode = () => h('style', null, css)
+const seedEmotions = () => [['平静', 'calm'], ['俏皮', 'playful'], ['失落', 'down'], ['生气', 'angry'], ['兴奋', 'excited'], ['得意', 'proud'], ['娇嗔', 'whiny'], ['慵懒', 'lazy']].map(([name, code]) => ({ name, code, builtin: true, engine: null, instructions: '', strength: 'model', ref: { mode: 'none', path: '', text: '', param: '' } }))
+const seedStrengths = () => [{ id: 'l1', name: '轻度', value: 2, builtin: true }, { id: 's1', name: '标准', value: 4, builtin: true }, { id: 'h1', name: '强烈', value: 6, builtin: true }]
+
+const PINYIN = { 平静:'calm', 俏皮:'playful', 失落:'down', 生气:'angry', 兴奋:'excited', 得意:'proud', 娇嗔:'whiny', 慵懒:'lazy',
+  傲娇:'aojiao', 慌张:'panic', 惊讶:'surprised', 害羞:'shy', 委屈:'wronged', 感动:'moved', 疑惑:'confused', 无语:'speechless', 悲伤:'sad', 恐惧:'fear', 温柔:'gentle' }
+
 return function VoicePlusPanel({ toast, reload }) {
-  const [snapshot, setSnapshot] = useState(null)
-  const [edits, setEdits] = useState({})
-  const [originalEdits, setOriginalEdits] = useState({})
+  const { useState, useEffect, useRef } = React
+  const [snap, setSnap] = useState(null)
+  const [S, setS] = useState(null)
+  const [view, setView] = useState('live')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
-  const [text, setText] = useState('你好，今天也要照顾好自己。')
-  const [audio, setAudio] = useState(null)
+  const [modal, setModal] = useState(null)
   const [fallbackInfo, setFallbackInfo] = useState(null)
   const [breaker, setBreaker] = useState(0)
-  const [emoDraft, setEmoDraft] = useState(null)
-  const [templateName, setTemplateName] = useState('')
-  const [voices, setVoices] = useState([])
-  const [picker, setPicker] = useState(false)
-  const [type, setType] = useState('personal')
-  const [search, setSearch] = useState('')
-  const [pageInfo, setPageInfo] = useState({ page: 1, nextPageToken: '', hasMore: false })
-  const live = useRef(false), locked = useRef(false), dirtyRef = useRef(false), audioUrl = useRef('')
-  const emotionDirty = Boolean(emoDraft && snapshot && JSON.stringify(emoDraft) !== JSON.stringify(emoOf(snapshot.settings)))
-  const dirty = Object.keys(edits).length > 0 || Object.keys(originalEdits).length > 0 || emotionDirty
+  const [preview, setPreview] = useState(null)
+  const live = useRef(false), locked = useRef(false), dirtyRef = useRef(false)
+
+  const dirty = !!(snap && S) && JSON.stringify(S) !== JSON.stringify(snap)
   dirtyRef.current = dirty
-  const config = { ...(snapshot?.settings || {}), ...edits }
-  const original = { ...(snapshot?.original || {}), ...originalEdits }
-  for (const group of ['http', 'cosyvoice', 'gptsovits']) original[group] = { ...(snapshot?.original?.[group] || {}), ...(originalEdits[group] || {}) }
-  const provider = snapshot?.actualMode === 'official' ? 'builtin' : config.provider || 'builtin'
-  const replace = r => {
-    setSnapshot(r); setEdits({}); setOriginalEdits({})
-    setEmoDraft(emoOf(r.settings))
-    if (audioUrl.current) { URL.revokeObjectURL(audioUrl.current); audioUrl.current = '' }
-    setAudio(null)
-  }
-  // Chat-path fallbacks are silent; the voice module remembers the last one, we just mirror it.
-  const refreshFallback = () => {
-    call('/breeze/status').then(r => {
-      if (!live.current || !r || r.ok === false) return
-      setBreaker(Number(r.breakerUntil) || 0)
-      if (!r.lastFallback) return
-      setFallbackInfo(previous => (previous && previous.at === r.lastFallback.at ? previous : r.lastFallback))
-    }).catch(() => {})
-  }
 
   useEffect(() => {
     live.current = true
     const refresh = () => {
-      if (locked.current || dirtyRef.current) return
-      call('/console/status').then(r => { if (!live.current || locked.current || dirtyRef.current) return; if (r.ok === false) setError(r.message); else { setSnapshot(r); setEmoDraft(emoOf(r.settings)); if (r.actualMode === 'enhanced') refreshFallback() } }).catch(() => { if (live.current) setError('读不到控制台，请确认配套模块已启用。') })
+      if (locked.current) return
+      call('/console/status').then(r => {
+        if (!live.current || locked.current) return
+        setSnap(r)
+        setS(previous => previous || reconcile(null, r))
+      }).catch(() => { if (live.current) setError('读不到控制台，请确认配套模块已启用。') })
+      call('/breeze/status').then(r => {
+        if (!live.current || !r || r.ok === false) return
+        setBreaker(Number(r.breakerUntil) || 0)
+        setFallbackInfo(r.lastFallback || null)
+      }).catch(() => {})
     }
     refresh()
-    const timer = setInterval(refresh, 5000)
-    const leave = e => { if (dirtyRef.current) { e.preventDefault(); e.returnValue = '' } }
-    window.addEventListener('beforeunload', leave)
-    return () => { live.current = false; clearInterval(timer); window.removeEventListener('beforeunload', leave); if (audioUrl.current) URL.revokeObjectURL(audioUrl.current) }
+    const timer = setInterval(refresh, 3000)
+    return () => { live.current = false; clearInterval(timer) }
   }, [])
 
-  const update = (key, value) => setEdits(previous => {
-    const next = { ...previous }
-    if (value === snapshot?.settings?.[key] || (key === 'apiKey' && value === '')) delete next[key]; else next[key] = value
-    return next
-  })
-  const updateOriginal = (key, value, group) => setOriginalEdits(previous => {
-    const next = { ...previous }
-    if (group) {
-      const part = { ...next[group] }
-      if (value === snapshot?.original?.[group]?.[key] || (group === 'http' && key === 'headers' && value === '')) delete part[key]; else part[key] = value
-      if (Object.keys(part).length) next[group] = part; else delete next[group]
-    } else if (value === snapshot?.original?.[key]) delete next[key]; else next[key] = value
-    return next
-  })
+  // 视图状态：live = 页面正在编辑的配置；预设 tab 应用后会写入 live。
+  const viewRef = useRef('live')
+  function reconcile(previous, r) {
+    const seed = { engines: r.engines || [], emotions: r.emotions || seedEmotions(), strengths: r.strengths || seedStrengths(), presets: r.presets || [], advanced: r.advanced || {} }
+    return previous ? previous : seed
+  }
+  function setRoute(patch) { setS(s => ({ ...s, ...patch })) }
+  function applyView(target) {
+    if (target === view) return
+    if (view !== 'live') { const p = (S.presets || []).find(x => x.name === view); if (p && JSON.stringify(S.emotions) !== JSON.stringify(p.route.emotions)) toast('预设「' + view + '」的修改未保存，已还原为预设内容') }
+    setView(target)
+    if (target !== 'live') { const p = (S.presets || []).find(x => x.name === target); if (p) setRoute({ emotions: clone(p.route.emotions), strengths: clone(p.route.strengths) }) }
+    setS(s => ({ ...s }))
+  }
+  function clone(v){ return JSON.parse(JSON.stringify(v)) }
+
   async function action(label, work) {
     if (locked.current) return
     locked.current = true; setBusy(label); setError('')
@@ -102,149 +138,227 @@ return function VoicePlusPanel({ toast, reload }) {
     finally { locked.current = false; if (live.current) setBusy('') }
   }
   async function checked(path, body) { const r = await call(path, body); if (r.ok === false) throw new Error(r.message || '操作未完成'); return r }
-  const saveAll = () => action('save', async () => {
-    const settings = { ...edits }
-    if (emotionDirty) settings.emotion = emoDraft
-    const r = await checked('/console/save', { revision: snapshot.revision, settings, original: originalEdits })
-    if (live.current) { replace(r); toast?.('语音设置已保存'); reload?.() }
-  })
-  const setMode = mode => action('mode', async () => {
-    if (dirty) throw new Error('请先保存或撤销未保存的配置，再切换模式。')
-    const r = await checked('/console/mode', { revision: snapshot.revision, mode })
-    if (live.current) { replace(r); toast?.(r.actualMode === mode ? '已切换为' + modeNames[mode] : '期望模式与实际运行不一致，请查看提示'); reload?.() }
-  })
-  const refresh = () => action('refresh', async () => { const r = await checked('/console/status'); if (live.current) { replace(r); if (r.actualMode === 'enhanced') refreshFallback() } })
-  const loadVoices = more => action('voices', async () => {
-    const r = await checked('/breeze/voices', { type, search, page: more ? pageInfo.page + 1 : 1, pageToken: more ? pageInfo.nextPageToken : '' })
-    if (live.current) { setVoices(old => [...new Map([...(more ? old : []), ...(r.voices || [])].map(v => [v.voiceId, v])).values()]); setPageInfo(r); setPicker(true) }
-  })
-  const preview = () => action('test', async () => {
-    if (dirty) throw new Error('请先保存配置再试听。')
-    const r = await checked('/console/test', { revision: snapshot.revision, text })
-    if (!live.current) return
-    if (!r.data || !['audio/wav', 'audio/mpeg', 'audio/ogg'].includes(r.mime)) throw new Error('没有收到可播放音频。')
-    const bytes = Uint8Array.from(atob(r.data), ch => ch.charCodeAt(0)), url = URL.createObjectURL(new Blob([bytes], { type: r.mime }))
-    if (audioUrl.current) URL.revokeObjectURL(audioUrl.current)
-    audioUrl.current = url; setAudio({ url, mime: r.mime, engine: r.engine }); toast?.('合成成功 · ' + r.engine)
-  })
-  const btn = (label, onClick, options = {}) => h('button', { type: 'button', className: 'vp-btn', disabled: Boolean(busy), onClick, ...options }, label)
-  const field = (label, value, onChange, options = {}) => h('label', { className: 'vp-field' + (options.wide ? ' wide' : '') }, h('span', null, label),
-    h(options.area ? 'textarea' : 'input', { className: 'vp-input', 'aria-label': label, value: value ?? '', disabled: Boolean(busy), type: options.type || 'text', placeholder: options.placeholder,
-      min: options.min, max: options.max, step: options.step, readOnly: options.readOnly,
-      onChange: e => onChange?.(options.type === 'number' ? e.target.value === '' ? '' : Number(e.target.value) : e.target.value) }), options.hint ? h('small', { className: 'vp-hint' }, options.hint) : null)
-  const select = (label, value, onChange, options) => h('label', { className: 'vp-field' }, h('span', null, label), h('select', { className: 'vp-input', 'aria-label': label, value: value ?? '', disabled: Boolean(busy), onChange: e => onChange(e.target.value) }, options.map(o => h('option', { key: Array.isArray(o) ? o[0] : o, value: Array.isArray(o) ? o[0] : o }, Array.isArray(o) ? o[1] : o))))
-  const toggle = (label, key) => h('label', { className: 'vp-toggle' }, h('input', { type: 'checkbox', checked: Boolean(config[key]), disabled: Boolean(busy), onChange: e => update(key, e.target.checked) }), label)
-  const patchEndpoint = (id, patch) => setEmoDraft(d => ({ ...d, endpoints: d.endpoints.map(e => (e.id === id ? canonEndpoint({ ...e, ...patch }) : e)) }))
-  const removeEndpoint = id => setEmoDraft(d => ({ ...d, endpoints: d.endpoints.filter(e => e.id !== id), routing: Object.fromEntries(Object.entries(d.routing).map(([k, v]) => [k, v === id ? 'breezeblue' : v])) }))
-  const addEndpoint = () => setEmoDraft(d => {
-    let n = d.endpoints.length
-    while (n < 999 && d.endpoints.some(e => e.id === 'e' + (n + 1))) n++
-    return { ...d, endpoints: [...d.endpoints, canonEndpoint({ id: 'e' + (n + 1), name: '新端点 ' + (n + 1) })] }
-  })
-  const patchRouting = (key, value) => setEmoDraft(d => ({ ...d, routing: { ...d.routing, [key]: value } }))
-  const patchEmotions = (key, patch) => setEmoDraft(d => ({ ...d, emotions: { ...d.emotions, [key]: { ...d.emotions[key], ...patch } } }))
-  const patchArousal = (key, value) => setEmoDraft(d => ({ ...d, arousal: { ...d.arousal, [key]: value } }))
-  const savePreset = () => setEmoDraft(d => {
-    const name = templateName.trim()
-    if (!name) return d
-    return { ...d, templates: [...d.templates.filter(t => t.name !== name), { name, voiceId: config.voiceId || '', routing: { ...d.routing }, emotions: JSON.parse(JSON.stringify(d.emotions)), arousal: { ...d.arousal } }] }
-  })
-  const applyPreset = t => {
-    setEmoDraft(d => ({ ...d, routing: { ...t.routing }, emotions: canonEmotions(t), arousal: { ...t.arousal } }))
-    if (t.voiceId) update('voiceId', t.voiceId)
+  function saveAll() {
+    action('save', async () => {
+      const r = await checked('/console/save', { revision: snap.revision, ...clone(S) })
+      if (!live.current) return
+      setSnap(r); setS(reconcile(clone(S), r)); viewRef.current = view
+      toast('语音设置已保存'); reload?.()
+    })
   }
-  const removePreset = name => setEmoDraft(d => ({ ...d, templates: d.templates.filter(t => t.name !== name) }))
-  const epHeadersSet = id => Boolean((snapshot?.settings?.emotion?.endpoints || []).find(x => x.id === id)?.headersSet)
-  const legOptions = [['breezeblue', '远程 Breeze'], ['builtin', '原有引擎'], ...(emoDraft?.endpoints || []).map(e => [e.id, e.name])]
-  const emotionTab = () => h('div', { role: 'tabpanel', 'aria-label': '情绪引擎配置' },
-    h('div', { className: 'vp-card' }, h('h3', null, '标签写法'), h('ul', { className: 'vp-guide' },
-      h('li', null, '模型在 <voice>…</voice> 里写标记：<voice>[excited:H]今天运气真好！[laugh]</voice>（方括号会被剥掉，不念出来）。'),
-      h('li', null, '强度/风格可省略：<voice>[down:L]对不起…[cry]</voice>；无标记默认「平静 · 中唤醒 · 无风格」。'),
-      h('li', null, '强度 L 轻 / M 标准 / H 强烈：唤醒度不调速，而是与情绪指令相交成 guidance（仅指令模式生效）；情绪浓度主要靠模型写进文本。'),
-      h('li', null, '情绪行填了指令时，指令与唤醒度 guidance 组成 Breeze 请求；纯文本行不传指令。风格换算为官方行内标签。'))),
-    h('div', { className: 'vp-card' }, h('h3', null, '情绪端点'),
-      h('p', { className: 'vp-hint' }, '通用 HTTP 推理端点。占位符：{text} {emotion} {arousal} {styles} {reqid}。端点单次请求、不自动重试；失败按「该情绪所选端点 → 远程 Breeze → 原有引擎」降级（fallback 开关是总闸）。'),
-      (emoDraft?.endpoints || []).map(ep => h('div', { key: ep.id, style: { border: '1px solid var(--vp-line)', borderRadius: 10, padding: 12, marginTop: 10 } },
-        h('div', { className: 'vp-fields' },
-          field('端点名称', ep.name, v => patchEndpoint(ep.id, { name: v }), { placeholder: '自训练女声' }),
-          select('请求方式', ep.method, v => patchEndpoint(ep.id, { method: v }), ['GET', 'POST']),
-          field('地址模板', ep.urlTemplate, v => patchEndpoint(ep.id, { urlTemplate: v }), { wide: true, placeholder: 'http://127.0.0.1:8000/tts?text={text}&emotion={emotion}&arousal={arousal}&styles={styles}' }),
-          ep.method === 'POST' ? field('请求体模板', ep.body, v => patchEndpoint(ep.id, { body: v }), { wide: true, area: true, placeholder: '{"text":"{text}","emotion":"{emotion}","arousal":"{arousal}","styles":"{styles}"}' }) : null,
-          field('请求头', ep.headers, v => patchEndpoint(ep.id, { headers: v }), { wide: true, area: true, placeholder: epHeadersSet(ep.id) ? '已保存，留空保持；输入新内容替换' : '一行一个 Name: Value' })),
-        h('div', { className: 'vp-row', style: { marginTop: 10 } }, btn('删除端点', () => removeEndpoint(ep.id), { className: 'vp-btn small' })))),
-      h('div', { className: 'vp-row', style: { marginTop: 10 } }, btn('添加端点', addEndpoint, { className: 'vp-btn small' }))),
-    h('div', { className: 'vp-card' }, h('h3', null, '8 种核心情绪 · 指令与引导'),
-      h('p', { className: 'vp-hint' }, '指令留空 = 纯文本模式（矩阵实测最稳，推荐）：情绪浓度靠模型写进文本本身。填了指令 guidance 才生效，且 guidance>1 时平台会忽略音色相似度(boost)。'),
-      h('div', { className: 'vp-fields' }, EMOTION_LIST.map(([key, zh]) => h('div', { className: 'vp-field', key },
-        h('span', null, zh),
-        h('input', { className: 'vp-input', 'aria-label': '情绪指令 · ' + zh, value: emoDraft?.emotions?.[key]?.instructions || '', placeholder: EMOTION_HINT[key] || '留空=纯文本模式（推荐）', disabled: Boolean(busy), onChange: e => patchEmotions(key, { instructions: e.target.value }) }),
-        h('select', { className: 'vp-input', 'aria-label': '情绪 guidance · ' + zh, value: String((emoDraft?.emotions?.[key]?.guidance ?? 'follow')), disabled: Boolean(busy) || !(emoDraft?.emotions?.[key]?.instructions || '').trim(), onChange: e => patchEmotions(key, { guidance: e.target.value === 'follow' ? 'follow' : Number(e.target.value) }) },
-          h('option', { value: 'follow' }, '跟随唤醒度'), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => h('option', { key: n, value: n }, 'guidance ' + n))),
-        (emoDraft?.emotions?.[key]?.instructions || '').trim() ? null : h('span', { className: 'vp-hint' }, 'guidance 填写指令后生效'))))),
-    h('div', { className: 'vp-card' }, h('h3', null, '唤醒度 · guidance（轻 / 标准 / 强烈）'),
-      h('p', { className: 'vp-hint' }, '情绪行选「跟随」时，实际 guidance 取这里对应档位的值；仅对填了指令的情绪生效。保存时情绪指令 × 唤醒度自动相交。'),
-      h('div', { className: 'vp-fields' }, [['L', '轻'], ['M', '标准'], ['H', '强烈']].map(([k, zh]) => h('label', { className: 'vp-field', key: k }, h('span', null, zh), h('input', { className: 'vp-input', type: 'number', min: 1, max: 10, step: 1, 'aria-label': '唤醒度 guidance · ' + zh, value: emoDraft?.arousal?.[k] ?? DEFAULT_AROUSAL[k], disabled: Boolean(busy), onChange: e => patchArousal(k, e.target.value === '' ? '' : Number(e.target.value)) }))))),
-    h('div', { className: 'vp-card' }, h('h3', null, '8 种核心情绪路由'),
-      h('div', { className: 'vp-fields' }, EMOTION_LIST.map(([key, zh]) => h('label', { className: 'vp-field', key }, h('span', null, zh), h('select', { className: 'vp-input', 'aria-label': '情绪路由 · ' + zh, value: (emoDraft?.routing || {})[key] || 'breezeblue', disabled: Boolean(busy), onChange: e => patchRouting(key, e.target.value) }, legOptions.map(([id, name]) => h('option', { key: id, value: id }, name))))))),
-    h('div', { className: 'vp-card' }, h('h3', null, '情绪预设'),
-      h('p', { className: 'vp-hint' }, '预设 = 当前 Voice ID + 情绪指令表 + 唤醒度表 + 8 情绪路由。角色即音色：应用预设时一并切回它的 Voice ID。'),
-      h('div', { className: 'vp-row grow', style: { marginBottom: 10 } }, field('预设名称', templateName, setTemplateName, { placeholder: '例如 玉玲珑 / 沈妙' }), btn('保存为预设', savePreset, { className: 'vp-btn small', disabled: !templateName.trim() })),
-      (emoDraft?.templates || []).length ? h('div', { className: 'vp-picker' }, (emoDraft?.templates || []).map(t => h('div', { className: 'vp-row', key: t.name, style: { justifyContent: 'space-between' } }, h('span', { className: 'vp-hint' }, t.name + (t.voiceId ? ' · ' + t.voiceId : ' · 未绑音色')), h('div', { className: 'vp-row' }, btn('应用', () => applyPreset(t), { className: 'vp-btn small' }), btn('删除', () => removePreset(t.name), { className: 'vp-btn small' }))))) : h('p', { className: 'vp-hint' }, '还没有预设。')))
+  function switchView(target) {
+    if (target === view) return
+    if (view !== 'live') { const p = (S.presets || []).find(x => x.name === view); if (p && (JSON.stringify(S.emotions) !== JSON.stringify(p.route.emotions) || JSON.stringify(S.strengths) !== JSON.stringify(p.route.strengths))) toast('预设「' + view + '」的修改未保存，已还原为预设内容') }
+    setView(target); viewRef.current = target
+    if (target !== 'live') { const p = (S.presets || []).find(x => x.name === target); if (p) setRoute({ emotions: clone(p.route.emotions), strengths: clone(p.route.strengths) }) }
+  }
+  function savePreset(mode) {
+    setModal({ kind: 'preset-name', mode, name: mode === 'modify' ? view : '' })
+  }
+  function presetOk() {
+    const name = (modal.name || '').trim()
+    if (!name){ toast('请填写预设名称'); return }
+    const route = clone({ emotions: S.emotions, strengths: S.strengths })
+    if (modal.mode === 'save'){
+      if ((S.presets || []).some(p => p.name === name)){ toast('已有同名预设，换个名字或选它后点「修改预设」'); return }
+      setRoute({ presets: [...(S.presets || []), { name, route }] }); setView(name); viewRef.current = name; setModal(null); toast('预设「' + name + '」已保存')
+    } else {
+      setRoute({ presets: (S.presets || []).map(p => p.name === view ? { name, route } : p) }); setView(name); viewRef.current = name; setModal(null); toast('预设「' + name + '」已更新')
+    }
+  }
+  function delPreset() {
+    setRoute({ presets: (S.presets || []).filter(p => p.name !== view) }); setView('live'); viewRef.current = 'live'; setModal(null); toast('预设已删除')
+  }
 
-  if (!snapshot) return h('div', { className: 'vp' }, h('style', null, css), h('div', { className: 'vp-card' }, h('h3', null, '增强语音'), h('p', { className: 'vp-sub' }, error || '正在读取语音设置…'), error ? btn('重新连接', refresh) : null))
-  const mismatch = snapshot.requestedMode !== snapshot.actualMode
-  const originalFields = []
-  if (['auto', 'edge'].includes(original.engine)) originalFields.push(
-    field('微软音色名称', original.voice, v => updateOriginal('voice', v), { wide: true, placeholder: 'zh-CN-XiaoyiNeural' }),
-    field('语速（edge）', original.rate, v => updateOriginal('rate', v), { placeholder: '+0%' }), field('音调（edge）', original.pitch, v => updateOriginal('pitch', v), { placeholder: '+0Hz' }))
-  if (original.engine === 'windows') originalFields.push(h('p', { className: 'vp-hint' }, '使用目标 Windows 系统语音，无需填写服务参数。'))
-  if (original.engine === 'gptsovits') originalFields.push(
-    field('GPT-SoVITS 服务地址', original.gptsovits.url, v => updateOriginal('url', v, 'gptsovits'), { wide: true, placeholder: 'http://127.0.0.1:9880' }),
-    field('参考音频路径', original.gptsovits.refAudio, v => updateOriginal('refAudio', v, 'gptsovits'), { wide: true }),
-    field('参考音频文字', original.gptsovits.promptText, v => updateOriginal('promptText', v, 'gptsovits'), { wide: true, area: true }))
-  if (original.engine === 'cosyvoice') originalFields.push(
-    field('CosyVoice 服务地址', original.cosyvoice.url, v => updateOriginal('url', v, 'cosyvoice'), { wide: true, placeholder: 'http://127.0.0.1:50000' }),
-    select('CosyVoice 模式', original.cosyvoice.mode, v => updateOriginal('mode', v, 'cosyvoice'), [['sft', '预置音色'], ['instruct', '语气指令']]),
-    field('CosyVoice 音色 ID', original.cosyvoice.spkId, v => updateOriginal('spkId', v, 'cosyvoice')),
-    ...(original.cosyvoice.mode === 'instruct' ? [field('CosyVoice 语气指令', original.cosyvoice.instruct, v => updateOriginal('instruct', v, 'cosyvoice'), { wide: true, area: true })] : []),
-    field('采样率', original.cosyvoice.sampleRate, v => updateOriginal('sampleRate', v, 'cosyvoice'), { type: 'number', min: 8000, max: 96000 }))
-  if (original.engine === 'http') originalFields.push(
-    field('HTTP 接口地址', original.http.urlTemplate, v => updateOriginal('urlTemplate', v, 'http'), { wide: true, hint: 'GET 的地址含 {text}；POST 在请求体中使用 {text}。' }),
-    select('HTTP 请求方式', original.http.method, v => updateOriginal('method', v, 'http'), ['GET', 'POST']),
-    field('HTTP 请求头', original.http.headers, v => updateOriginal('headers', v, 'http'), { wide: true, area: true, placeholder: original.http.headersSet ? '已保存，留空保留；输入新内容则替换' : '一行一个 Header: Value' }),
-    ...(original.http.method === 'POST' ? [field('HTTP 请求体', original.http.body, v => updateOriginal('body', v, 'http'), { wide: true, area: true, placeholder: '{"text":"{text}"}' })] : []))
+  const engines = S ? S.engines : []
+  const emotions = S ? S.emotions : []
+  const strengths = S ? S.strengths : []
+  const presets = S ? S.presets : []
+  const attached = emotions.filter(e => e.engine)
+  const breezeOn = engines.some(e => e.type === 'breeze' && e.promptTags !== false)
+  function engineName(id){ const e = engines.find(x => x.id === id); return e ? e.name : null }
+  function attachCount(id){ return emotions.filter(e => e.engine === id).length }
+  function isBreezeEmo(e){ const eng = engines.find(x => x.id === e.engine); return !!(eng && eng.type === 'breeze') }
+  function isGptEmo(e){ const eng = engines.find(x => x.id === e.engine); return !!(eng && eng.type === 'gptsovits') }
 
-  return h('div', { className: 'vp' }, h('style', null, css),
-    h('header', { className: 'vp-head' }, h('div', null, h('h2', null, '让每句话，有自己的声音'), h('p', { className: 'vp-sub' }, '增强语音 · VOICE PLUS  /  配置与试听在一处')), h('span', { className: 'vp-badge', role: 'status', 'aria-label': '实际语音模式' }, '当前：' + modeNames[snapshot.actualMode])),
-    h('div', { className: 'vp-modes', role: 'radiogroup', 'aria-label': '语音运行模式' }, [['enhanced', '增强语音', '我们的语音模块，支持远程 Breeze'], ['official', '官方语音', '切回宿主原版，保留原有设置'], ['off', '关闭语音', '两版都不运行，可随时重新开启']].map(([id, title, desc]) => h('button', { key: id, type: 'button', className: 'vp-mode', role: 'radio', 'aria-checked': snapshot.actualMode === id, disabled: Boolean(busy) || dirty || (id === 'enhanced' && !snapshot.enhancedAvailable), onClick: () => setMode(id) }, h('strong', null, title), h('span', null, desc)))),
-    mismatch || snapshot.fallback ? h('p', { className: 'vp-note warn' }, '期望模式：' + modeNames[snapshot.requestedMode] + '。当前实际运行：' + modeNames[snapshot.actualMode] + '。' + (snapshot.moduleError || '请检查「已安装」中的模块状态；官方加载失败回退机制仍然保留。')) : null,
+  const btn = (label, onClick, options = {}) => h('button', { type: 'button', className: 'vp-btn' + (options.className ? ' ' + options.className : ''), disabled: Boolean(busy) || options.disabled, onClick, ...options.extra }, options.icon ? h('span', { className: 'icon', ...icon(options.icon) }) : null, label)
+  const field = (label, value, onChange, options = {}) => h('label', { className: 'vp-field' }, h('span', { className: 'vp-label', style: { margin: '0 0 4px' } }, label),
+    options.area ? h('textarea', { className: 'vp-textarea', value: value ?? '', disabled: Boolean(busy), placeholder: options.placeholder, onChange: e => onChange(e.target.value) })
+      : h('input', { className: 'vp-input', type: options.type || 'text', value: value ?? '', disabled: Boolean(busy), placeholder: options.placeholder, min: options.min, max: options.max, onChange: e => options.type === 'number' ? onChange(e.target.value === '' ? '' : Number(e.target.value)) : onChange(e.target.value) }))
+  const select = (label, value, onChange, options, extra = {}) => h('label', { className: 'vp-field' }, h('span', { className: 'vp-label', style: { margin: '0 0 4px' } }, label),
+    h('select', { className: 'vp-select', value: value ?? '', disabled: Boolean(busy) || extra.disabled, onChange: e => onChange(e.target.value) }, options))
+
+  function renderEngineTable() {
+    return h('div', { className: 'vp-card' },
+      h('div', { className: 'vp-h3' }, h('h3', null, '引擎配置'), btn('新增引擎', () => setModal({ kind: 'engine', draft: null }), { className: 'primary', icon: 'plus' })),
+      h('p', { className: 'vp-hint' }, '情绪标记是 Breeze 专属能力，开关直接标在类型上；挂载数 = 情绪路由里使用该引擎的情绪数量。'),
+      h('div', { className: 'vp-table-wrap' }, h('table', { className: 'vp-table' },
+        h('thead', null, h('tr', null, ['名称', '引擎类型', '挂载数', '添加时间', ''].map((t, i) => h('th', { key: i, style: i === 4 ? { textAlign: 'right' } : null }, t)))),
+        h('tbody', null, engines.length ? engines.map(e => h('tr', { key: e.id },
+          h('td', null, h('b', null, e.name)),
+          h('td', null, h('span', { className: 'vp-badge2' + (e.type === 'breeze' ? '' : ' gray') }, e.type === 'breeze' ? (e.promptTags ? 'Breeze·情绪开' : 'Breeze·情绪关') : 'GPT-SoVITS')),
+          h('td', null, String(attachCount(e.id))),
+          h('td', { style: { color: 'var(--vp-muted)' } }, e.addedAt || ''),
+          h('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+            btn('修改', () => setModal({ kind: 'engine', draft: { ...clone(e), __edit: true } }), { className: 'small' }), ' ',
+            btn('删除', () => setModal({ kind: 'confirm-del-engine', id: e.id }), { className: 'small danger' })))) : h('tr', null, h('td', { colSpan: 5, style: { color: 'var(--vp-muted)' } }, '还没有引擎，点上方「新增引擎」开始。'))))),
+      h('p', { className: 'vp-hint', style: { display: engines.length ? 'none' : 'block' } }, '还没有引擎。点右上角「新增引擎」，第一个引擎会自动接管全部情绪。'))
+  }
+
+  function renderEngineModal() {
+    const d = modal.draft || {}
+    const breeze = d.type === 'breeze'
+    return h('div', { className: 'vp-modal' }, h('h3', null, d.__edit ? '修改引擎' : '新增引擎'),
+      field('引擎名称', d.name, v => setModal(m => ({ ...m, draft: { ...d, name: v } })), { placeholder: '例如 玉玲珑 / 沈妙-GPT' }),
+      select('引擎类型', d.type, v => setModal(m => ({ ...m, draft: { ...d, type: v, base: v === 'breeze' ? 'https://api.breeze.blue/v1' : 'http://127.0.0.1:9880' } })), [h('option', { value: 'breeze' }, 'Breeze'), h('option', { value: 'gptsovits' }, 'GPT-SoVITS')]),
+      field('服务地址', d.base, v => setModal(m => ({ ...m, draft: { ...d, base: v } }))),
+      field('API Key（可留空）', d.apiKey, v => setModal(m => ({ ...m, draft: { ...d, apiKey: v } })), { type: 'password', placeholder: '留空 = 不使用鉴权' }),
+      breeze ? field('Voice ID', d.voiceId, v => setModal(m => ({ ...m, draft: { ...d, voiceId: v } })), { placeholder: 'voc_…' }) : null,
+      breeze ? h('div', { className: 'vp-row' }, btn('选择音色', () => setModal(m => ({ kind: 'voice-picker', draft: m.draft, query: '', loading: true, voices: null, failed: false })), { className: 'small' })) : null,
+      breeze ? h('label', { className: 'vp-check' }, h('input', { type: 'checkbox', checked: d.promptTags !== false, onChange: e => setModal(m => ({ ...m, draft: { ...d, promptTags: e.target.checked } })) }), ' 情绪标记提示词（教模型写这个引擎的情绪与行内标签）') : null,
+      !breeze ? h('p', { className: 'vp-hint' }, 'GPT-SoVITS：推理参数在服务端配置；本插件把文本与情绪代号发给服务地址，情绪卡片里可按情绪配参考。') : null,
+      h('div', { className: 'acts' }, btn('取消', () => setModal(null)), btn('保存', saveEngine, { className: 'primary' })))
+  }
+  function saveEngine() {
+    const d = modal.draft
+    if (!d.name.trim()){ toast('请填写引擎名称'); return }
+    if (!/^https?:\/\//.test(d.base.trim())){ toast('服务地址需以 http(s):// 开头'); return }
+    if (d.type === 'breeze' && !d.voiceId.trim()){ toast('Breeze 引擎需要 Voice ID'); return }
+    const first = engines.length === 0
+    const entry = { ...clone(d), name: d.name.trim(), base: d.base.trim(), addedAt: d.addedAt || now() }
+    setRoute({ engines: d.__edit ? engines.map(x => x.id === entry.id ? entry : x) : [...engines, entry] })
+    if (first) setRoute({ emotions: emotions.map(e => ({ ...e, engine: entry.id })) })
+    setModal(null); renderIcons(); toast(first ? '引擎已添加，全部情绪默认挂载到它' : '引擎已保存')
+  }
+  function delEngineYes(id){
+    setRoute({ engines: engines.filter(x => x.id !== id), emotions: emotions.map(e => e.engine === id ? { ...e, engine: null, instructions: '' } : e) })
+    setModal(null); renderIcons(); toast('引擎已删除')
+  }
+  function renderVoicePicker() {
+    if (modal.voices) {
+      const q = (modal.query || '').trim()
+      const list = modal.voices.filter(v => !q || v.name.indexOf(q) >= 0)
+      return h('div', null, field('搜索音色名称…', modal.query, v => setModal(m => ({ ...m, query: v }))),
+        h('div', null, list.length ? list.map(v => h('div', { className: 'vp-voice-row', key: v.voiceId },
+          h('span', null, v.name + ' ', h('span', { className: 'vp-emo-code' }, v.voiceId), ' ', h('span', { className: 'vp-badge2' + (v.origin === 'cloned' ? '' : ' gray') }, v.origin === 'cloned' ? '我的音色' : '平台')),
+          btn('选择', () => { setModal(m => ({ ...m, kind: 'engine', voices: null, draft: { ...m.draft, voiceId: v.voiceId } })) }, { className: 'small primary' }))) : h('p', { className: 'vp-hint' }, '没有匹配的音色')))
+    }
+    if (modal.failed) {
+      return h('div', null, h('div', { className: 'vp-err' }, '音色列表拉取失败：请检查「服务地址」与「API Key」（私有部署请确认服务可达），然后重试。'),
+        h('div', { className: 'acts', style: { justifyContent: 'space-between' } }, btn('重试', () => setModal(m => ({ ...m, failed: false, loading: true }))), btn('取消', () => setModal(null))))
+    }
+    // 模拟加载态：真实环境里列表从 Breeze 服务拉取
+    setTimeout(() => setModal(m => m && m.kind === 'voice-picker' ? { ...m, loading: false, voices: [], failed: true, failMsg: '音色列表拉取失败：请检查「服务地址」与「API Key」（私有部署请确认服务可达），然后重试。' } : m), 10)
+    return h('div', null, h('div', { className: 'vp-spin' }), h('p', { className: 'vp-hint', style: { textAlign: 'center' } }, '正在拉取音色列表…'))
+  }
+
+  function renderEmotionCards() {
+    return h('div', { className: 'vp-emo-grid' }, emotions.map(e => {
+      const breeze = isBreezeEmo(e), gpt = isGptEmo(e)
+      const ref = e.ref || { mode: 'none', path: '', text: '', param: '' }
+      const stOff = breeze && !String(e.instructions || '').trim()
+      const stOpts = [h('option', { value: 'model' }, '模型自选')].concat(strengths.map(a => h('option', { value: a.id, key: a.id }, a.name + ' ' + a.value)))
+      if (typeof e.strength === 'number') stOpts.push(h('option', { value: String(e.strength), selected: true }, '自定义'))
+      const refOpts = [h('option', { value: 'none' }, '不使用参考'), h('option', { value: 'path' }, '路径'), h('option', { value: 'param' }, '参数')]
+      return h('div', { className: 'vp-emo-card', key: e.code },
+        h('div', { className: 'vp-emo-top' }, h('b', null, e.name), h('span', { className: 'vp-emo-code' }, e.code),
+          e.builtin ? null : btn('删除', () => { setRoute({ emotions: emotions.filter(x => x.code !== e.code) }); toast('情绪已删除') }, { className: 'small ghost danger' }),
+          e.engine ? null : h('span', { className: 'vp-emo-off' }, '未进入提示词')),
+        h('div', { className: 'emo-fields vp-emo-fields' },
+          h('div', { className: 'vp-row' }, h('span', { className: 'vp-label', style: { margin: 0, minWidth: '52px' } }, '引擎'),
+            select('', e.engine || '', v => setRoute({ emotions: emotions.map(x => x.code === e.code ? { ...x, engine: v || null, instructions: v ? x.instructions : '', ref: v ? x.ref : { mode: 'none', path: '', text: '', param: '' } } : x) }), [h('option', { value: '' }, '不使用')].concat(engines.map(en => h('option', { value: en.id, key: en.id }, en.name))))),
+          breeze ? field('指令', e.instructions, v => setRoute({ emotions: emotions.map(x => x.code === e.code ? { ...x, instructions: v } : x) }), { area: true, placeholder: '留空 = 纯文本模式（推荐）' }) : null,
+          gpt ? h('div', { className: 'vp-refbox' },
+            h('div', { className: 'vp-row' }, h('span', { className: 'vp-label', style: { margin: 0, minWidth: '64px' } }, '参考配置'),
+              select('', ref.mode, v => setRoute({ emotions: emotions.map(x => x.code === e.code ? { ...x, ref: { ...x.ref, mode: v, param: v === 'param' && !x.ref.param ? e.code : x.ref.param } } : x) }), refOpts)),
+            ref.mode === 'path' ? field('音频路径', ref.path, v => setRoute({ emotions: emotions.map(x => x.code === e.code ? { ...x, ref: { ...x.ref, path: v } } : x) }), { placeholder: '例如 D:/refs/' + e.code + '.wav' }) : null,
+            ref.mode === 'path' ? field('音频文字', ref.text, v => setRoute({ emotions: emotions.map(x => x.code === e.code ? { ...x, ref: { ...x.ref, text: v } } : x) }), { placeholder: '参考音频说的是什么' }) : null,
+            ref.mode === 'param' ? field('参数', ref.param || e.code, v => setRoute({ emotions: emotions.map(x => x.code === e.code ? { ...x, ref: { ...x.ref, param: v } } : x) })) : null) : null,
+          h('div', { className: 'vp-row' }, h('span', { className: 'vp-label', style: { margin: 0, minWidth: '52px' } }, '强度'),
+            stOff ? h('span', { className: 'vp-hint', style: { margin: 0 } }, '纯文本模式：guidance 恒 1.0，音色相似度增强生效')
+              : select('', typeof e.strength === 'number' ? String(e.strength) : e.strength, v => setRoute({ emotions: emotions.map(x => x.code === e.code ? { ...x, strength: v === '__custom' ? 4 : v === 'model' ? 'model' : v } : x) }), stOpts),
+            typeof e.strength === 'number' ? field('', e.strength, v => setRoute({ emotions: emotions.map(x => x.code === e.code ? { ...x, strength: Number(v) || 1 } : x) }), { type: 'number', min: 1, max: 10 }) : null)))
+    }))
+  }
+  function renderPrompt() {
+    const lines = ['- 写 <voice>…</voice> 里的语音内容时，句子之间用中文标点（，。！？）分隔，不要只靠空格分开几句话。']
+    if (attached.length) lines.push('- 语音可带情绪标记：<voice> 开头写 [情绪:强度]。可选情绪：' + attached.map(e => e.code + ' ' + e.name).join(' / ') + '；强度：' + (strengths.length ? strengths.map(a => a.name).join('/') : 'L 轻 / M 标准 / H 强烈') + '，或由你自己判断。没有情绪就不写标记。')
+    if (breezeOn) lines.push('- 需要副语言时在句中或句尾加 [whisper 气声] / [cry 哭腔] / [laugh 笑腔] / [sigh 叹气]，也可以直接用 Breeze 行内标签如 [笑] [叹气] [耳语] [哭声]。')
+    if (!attached.length) lines.push('-（没有挂载引擎的情绪：本条情绪标记规则整体不注入）')
+    return h('div', { className: 'vp-card' }, h('div', { className: 'vp-h3' }, h('h3', null, '提示词预览'), h('span', { className: 'vp-hint', style: { margin: 0 } }, '随上面的配置实时变化；未挂引擎的情绪不会出现在这里')), h('pre', { className: 'vp-pp' }, lines.join('\n')))
+  }
+  function renderStrengthModal() {
+    return h('div', { className: 'vp-modal' }, h('h3', null, '强度'), h('p', { className: 'vp-hint' }, '情绪卡片选「模型自选」时，模型写的强度按这里的档位换算 guidance；仅在填了指令的 Breeze 引擎上生效。'),
+      h('div', null, strengths.map(a => h('div', { className: 'vp-st-row', key: a.id },
+        h('input', { className: 'vp-input', value: a.name, readOnly: a.builtin, style: a.builtin ? { background: '#f0f2f6' } : null, onChange: e => setRoute({ strengths: strengths.map(x => x.id === a.id ? { ...x, name: e.target.value } : x) }) }),
+        h('input', { className: 'vp-input', type: 'number', min: 1, max: 10, value: a.value, onChange: e => setRoute({ strengths: strengths.map(x => x.id === a.id ? { ...x, value: Math.max(1, Math.min(10, Number(e.target.value) || 1)) } : x) }) }),
+        a.builtin ? h('span', { className: 'vp-badge2 gray' }, '默认') : btn('删除', () => { setRoute({ strengths: strengths.filter(x => x.id !== a.id), emotions: emotions.map(e => e.strength === a.id ? { ...e, strength: 'model' } : e) }); toast('强度档已删除，用到它的情绪已回落「模型自选」') }, { className: 'small danger' })))),
+      h('div', { className: 'acts', style: { justifyContent: 'space-between' } }, btn('添加自定义', () => setRoute({ strengths: [...strengths, { id: 'c' + Date.now(), name: '自定义 ' + (strengths.length + 1), value: 4, builtin: false }] }), { icon: 'plus' }), btn('完成', () => setModal(null), { className: 'primary' })))
+  }
+  function renderPreviewModal() {
+    return h('div', { className: 'vp-modal', style: { width: '520px' } }, h('h3', null, '试听'), h('p', { className: 'vp-hint' }, '使用当前配置的实际合成路径；远程合成会计费，不自动重试。'),
+      field('试听文本', preview.text, v => setPreview(p => ({ ...p, text: v })), { area: true }),
+      field('情绪标记（可选，按提示词格式写）', preview.tag, v => setPreview(p => ({ ...p, tag: v })), { placeholder: '例如 [excited:H] 或 [laugh]' }),
+      h('div', { className: 'acts', style: { justifyContent: 'flex-start' } }, btn('生成试听', doPreview, { className: 'primary', disabled: Boolean(preview.busy) }), h('span', { className: 'vp-hint', style: { margin: 0 } }, preview.msg || '')),
+      preview.out || null)
+  }
+  async function doPreview() {
+    const text = (preview.text || '').trim()
+    if (!text){ toast('请填写试听文本'); return }
+    setPreview(p => ({ ...p, busy: true, msg: '合成中，请稍候…', out: null }))
+    try {
+      const r = await checked('/console/test', { text, tag: preview.tag || '', revision: snap.revision })
+      if (!live.current) return
+      const mime = r.mime === 'audio/ogg' ? 'ogg' : r.mime === 'audio/mpeg' ? 'mp3' : 'wav'
+      setPreview(p => ({ ...p, busy: false, msg: '', out: h('div', { className: 'player' }, h('audio', { controls: true, src: 'data:' + r.mime + ';base64,' + r.data, style: { width: '100%', marginTop: '10px' } }), h('p', { className: 'vp-hint' }, '本次实际引擎：' + r.engine)) }))
+      toast('合成成功 · ' + r.engine)
+    } catch (e) {
+      setPreview(p => ({ ...p, busy: false, msg: '' }))
+      setError(String(e.message || '试听失败'))
+    }
+  }
+  function now(){ const d = new Date(); function p(n){ return (n < 10 ? '0' : '') + n }; return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) }
+
+
+  if (!snap || !S) return h('div', { className: 'vp' }, cssNode(), h('p', { className: 'vp-hint' }, error || '正在读取语音设置…'))
+  const tabList = [h('button', { type: 'button', className: 'vp-tab2' + (view === 'live' ? ' on' : ''), key: 'live', onClick: () => switchView('live') }, '当前')].concat(presets.map(p => h('button', { type: 'button', className: 'vp-tab2' + (view === p.name ? ' on' : ''), key: p.name, onClick: () => switchView(p.name) }, p.name)))
+
+  return h('div', { className: 'vp' }, cssNode(),
     error ? h('div', { className: 'vp-note err', role: 'alert' }, error) : null,
-    h('div', { className: 'vp-grid' }, h('section', { className: 'vp-card' },
-      snapshot.actualMode === 'official' ? h('p', { className: 'vp-note' }, '当前使用官方版。下方编辑原引擎；Breeze 参数原样保留，切回增强版即可继续使用。') : h('div', { className: 'vp-tabs', role: 'tablist', 'aria-label': '合成引擎' }, [['breezeblue', '远程 Breeze'], ['emotion', '情绪引擎'], ['builtin', '原有引擎']].map(([id, name]) => h('button', { key: id, type: 'button', className: 'vp-tab', role: 'tab', 'aria-selected': provider === id, disabled: Boolean(busy), onClick: () => update('provider', id) }, name))),
-      provider === 'emotion' ? emotionTab() : provider === 'breezeblue' ? h('div', { role: 'tabpanel', 'aria-label': '远程 Breeze 配置' }, h('div', { className: 'vp-fields' },
-        field('服务地址', 'https://api.breeze.blue/v1', null, { wide: true, readOnly: true }),
-        field('Breeze API Key', config.apiKey, v => update('apiKey', v), { wide: true, type: 'password', placeholder: snapshot.settings.apiKeySet ? '已保存密钥（留空不修改）' : 'brz_…', hint: '仅发送给官方 API；配置与密钥不会因切换模式而清空。' }),
-        field('Voice ID', config.voiceId, v => update('voiceId', v), { wide: true, placeholder: 'voc_…' }),
-        field('表演指令', config.instructions, v => update('instructions', v), { wide: true, area: true, placeholder: '自然、温柔地说话，像在和朋友聊天。' }),
-        toggle('情绪标记提示词（教模型写 [情绪:强度] 与行内标签）', 'promptTags')),
-        h('div', { className: 'vp-row', style: { marginTop: 12 } }, btn(picker ? '收起音色列表' : '选择已保存音色', () => setPicker(!picker), { className: 'vp-btn small' }), h('span', { className: 'vp-hint' }, '先保存密钥；查询不合成、不扣语音额度。')),
-        picker ? h('div', { className: 'vp-picker' }, h('div', { className: 'vp-fields' }, select('音色来源', type, v => { setType(v); setVoices([]); setPageInfo({ page: 1, hasMore: false }) }, [['personal', '我的音色'], ['default', '平台音色'], ['all', '全部']]), field('搜索音色', search, v => { setSearch(v); setVoices([]); setPageInfo({ page: 1, hasMore: false }) })), h('div', { className: 'vp-row', style: { marginTop: 10 } }, btn('获取音色列表', () => loadVoices(false), { disabled: Boolean(busy) || !snapshot.settings.apiKeySet || snapshot.actualMode !== 'enhanced' })), voices.length ? select('选择 Breeze 音色', config.voiceId, v => update('voiceId', v), [['', '请选择'], ...(config.voiceId && !voices.some(v => v.voiceId === config.voiceId) ? [[config.voiceId, config.voiceId]] : []), ...voices.map(v => [v.voiceId, v.name + ' · ' + v.voiceId])]) : h('p', { className: 'vp-hint' }, '在增强模式下使用已保存的密钥查询。'), pageInfo.hasMore ? btn('加载更多', () => loadVoices(true)) : null) : null,
-        h('details', { className: 'vp-details' }, h('summary', null, '高级设置 · 模型、格式与回退'), h('div', { className: 'vp-fields' },
-          field('模型 ID', config.modelId, v => update('modelId', v)), field('语言代码', config.languageCode, v => update('languageCode', v), { placeholder: '留空自动识别 / zh' }),
-          field('指令引导强度', config.guidanceScale, v => update('guidanceScale', v), { type: 'number', min: 1, max: 10, step: .1 }),
-          select('输出格式', config.outputFormat, v => update('outputFormat', v), ['wav', 'wav_24000', 'mp3', 'mp3_24000_64', 'mp3_24000_96', 'mp3_24000_128', 'mp3_24000_160']),
-          field('请求超时（秒）', config.timeoutSeconds, v => update('timeoutSeconds', v), { type: 'number', min: 10, max: 600, step: 10 }),
-          select('回退引擎', original.engine, v => updateOriginal('engine', v), engines),
-          field('重试次数', config.retryCount, v => update('retryCount', v), { type: 'number', min: 0, max: 5, step: 1, hint: '仅对「连接未建立」的失败自动重试（0=不重试）；已收到 HTTP 回应或超时一律不重试。' }),
-          field('重试间隔（秒）', config.retryDelaySeconds, v => update('retryDelaySeconds', v), { type: 'number', min: 0, max: 10, step: .25 })), h('div', { className: 'vp-divider' }), toggle('增强参考音色相似度', 'speakerBoost'), toggle('Breeze 失败时回退原引擎（不重复请求 Breeze）', 'fallback'))) : h('div', { role: 'tabpanel', 'aria-label': '原有引擎配置' }, select('原有语音引擎', original.engine, v => updateOriginal('engine', v), engines), h('div', { className: 'vp-fields', style: { marginTop: 16 } }, originalFields), h('p', { className: 'vp-hint', style: { marginTop: 16 } }, '这是官方原有引擎的同一份配置。RVC、ASR、安装组件和自动语音规则仍在原「语音」页，保持原功能。')),
-      h('footer', { className: 'vp-footer' }, h('span', { className: 'vp-hint', 'aria-live': 'polite' }, dirty ? '有未保存的修改 · 试听与模式切换前请保存' : '配置已保存'), h('div', { className: 'vp-row' }, btn(dirty ? '撤销修改' : '刷新', refresh), btn(busy === 'save' ? '保存中…' : '保存配置', saveAll, { className: 'vp-btn primary', disabled: Boolean(busy) || !dirty })))),
-      h('aside', { className: 'vp-side' }, h('section', { className: 'vp-card' }, h('h3', null, '听听现在的声音'), h('p', { className: 'vp-sub' }, '使用已保存配置，与聊天的实际调用路径一致。'),
-        h('div', { className: 'vp-info' }, h('span', null, '运行版本'), h('span', null, modeNames[snapshot.actualMode])), h('div', { className: 'vp-info' }, h('span', null, '生效引擎'), h('span', null, snapshot.actualMode === 'off' ? '未启用' : snapshot.actualMode === 'enhanced' && snapshot.settings.provider === 'breezeblue' ? '远程 Breeze' : snapshot.actualMode === 'enhanced' && snapshot.settings.provider === 'emotion' ? '情绪引擎' : engines.find(x => x[0] === snapshot.original.engine)?.[1] || '原有引擎')),
-        snapshot.localTtsActive ? h('p', { className: 'vp-note warn', style: { marginTop: 12 } }, '本地 TTS 接口正在接管，优先于这里的引擎。要走 Breeze，请到「本地接口」关闭 TTS 接管。') : null,
-        fallbackInfo && snapshot.actualMode === 'enhanced' ? h('p', { className: 'vp-note warn', style: { marginTop: 12 } }, '上次远程语音回退：' + new Date(fallbackInfo.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) + ' · ' + fallbackInfo.reason + '。聊天路径静默回退，可关闭回退开关查看真实错误。') : null,
-        breaker && Date.now() < breaker && snapshot.actualMode === 'enhanced' ? h('p', { className: 'vp-note warn', style: { marginTop: 12 } }, 'Breeze 额度熔断中（连续 402×3）：Breeze 腿暂停，约 ' + Math.ceil((breaker - Date.now()) / 60000) + ' 分钟后自动恢复；期间聊天走端点/原引擎。') : null,
-        snapshot.rvcVoice ? h('p', { className: 'vp-hint' }, 'RVC 后处理：' + snapshot.rvcVoice + '。听 Breeze 原声请在原语音页取消 RVC。') : null,
-        h('div', { className: 'vp-preview' }, field('试听文本', text, setText, { area: true, hint: '最多200字符；可写 [情绪:强度] 与 [风格] 标记试听；远程合成会计费，不自动重试。' }), btn(busy === 'test' ? '合成中，请稍候…' : '生成试听', preview, { className: 'vp-btn primary', style: { marginTop: 12, width: '100%' }, disabled: Boolean(busy) || dirty || snapshot.actualMode === 'off' || !text.trim() || Array.from(text).length > 200 })),
-        audio ? h('div', { className: 'vp-preview' }, h('audio', { controls: true, src: audio.url }), h('p', { className: 'vp-hint' }, '本次实际引擎：' + audio.engine), h('a', { href: audio.url, download: 'voice-preview.' + (audio.mime === 'audio/wav' ? 'wav' : audio.mime === 'audio/ogg' ? 'ogg' : 'mp3') }, '下载试听')) : null),
-        h('section', { className: 'vp-card' }, h('h3', null, '模式怎么选'), h('ul', { className: 'vp-guide' }, h('li', null, '增强：只运行我们的 voice，支持 Breeze 和原有引擎。'), h('li', null, '官方：只运行官方 voice，增强参数会保留。'), h('li', null, '关闭：不运行任何 voice；控制台留在这里，随时重开。'), h('li', null, '网络超时先看平台历史，避免重复提交计费。'))))))
+    h('div', { className: 'vp-head' }, h('div', null, h('h2', null, '让每句话，有自己的声音'), h('div', { className: 'vp-sub' }, '增强语音 · 情绪引擎 / 引擎与情绪路由都在这一页')), h('span', { className: 'vp-badge' }, '当前：增强语音')),
+    h('div', { className: 'vp-rail' },
+      btn('试听', () => setPreview({ text: '你好，今天也要照顾好自己。', tag: '', msg: '', out: null }), { icon: 'play' }),
+      btn('强度', () => setModal({ kind: 'strength' }), { icon: 'sliders' })),
+    renderEngineTable(),
+    h('section', { className: 'vp-card' },
+      h('div', { className: 'vp-h3' }, h('h3', null, '情绪路由'),
+        h('div', { className: 'vp-tabs-wrap' }, h('span', { className: 'vp-tabs-label' }, '预设：'), h('div', { className: 'vp-tabs' }, tabList)),
+        btn('添加情绪', () => setModal({ kind: 'add-emo', name: '', code: '' }), { icon: 'plus' })),
+      h('div', { className: 'hint-row' }, h('span', { className: 'vp-hint' }, '每种情绪单独配置；「不使用」引擎的情绪不会进入提示词。'), h('span', { className: 'grow' }),
+        btn(view === 'live' ? '保存预设' : '修改预设', () => savePreset(view === 'live' ? 'save' : 'modify'), { className: 'small primary' }),
+        h('button', { type: 'button', className: 'vp-btn small danger', style: { display: view === 'live' ? 'none' : '' }, onClick: () => setModal({ kind: 'confirm-del-preset' }) }, '删除预设')),
+      h('div', { className: 'vp-emo-grid' }, renderEmotionCards())),
+    renderPrompt(),
+    breaker && Date.now() < breaker ? h('div', { className: 'vp-note warn' }, 'Breeze 额度熔断中（连续 402×3）：Breeze 腿暂停，约 ' + Math.ceil((breaker - Date.now()) / 60000) + ' 分钟后自动恢复。') : null,
+    fallbackInfo ? h('div', { className: 'vp-note warn' }, '上次远程语音回退：' + new Date(fallbackInfo.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) + ' · ' + fallbackInfo.reason) : null,
+    modal ? h('div', { className: 'vp-mask', onClick: ev => { if (ev.target === ev.currentTarget) setModal(null) } },
+      modal.kind === 'engine' ? renderEngineModal() : modal.kind === 'voice-picker' ? renderVoicePicker() : modal.kind === 'strength' ? renderStrengthModal() : modal.kind === 'preview' ? renderPreviewModal() : modal.kind === 'add-emo' ? renderAddEmo() : modal.kind === 'preset-name' ? renderPresetName() : modal.kind === 'confirm-del-engine' ? renderConfirm('删除引擎', '删除「' + engineName(modal.id) + '」后，它挂载的 ' + attachCount(modal.id) + ' 个情绪会变为「不使用」（不进入提示词）。确定删除？', () => delEngineYes(modal.id)) : modal.kind === 'confirm-del-preset' ? renderConfirm('删除预设', '删除预设「' + view + '」？只影响这套预设，页面正在显示的配置和引擎列表都不会变。', () => delPreset()) : null) : null,
+)
+function renderAddEmo(){
+  return h('div', { className: 'vp-modal' }, h('h3', null, '添加情绪'),
+    field('情绪名称', modal.name, v => setModal(m => { const name = v.trim(); m.name = v; m.code = PINYIN[name] || (name ? 'emo' + (emotions.length + 1) : '') }), { placeholder: '例如 傲娇 / 慌张' }),
+    field('情绪代号（发给 LLM 的标记，小写英文）', modal.code, v => setModal(m => ({ ...m, code: v })), { placeholder: '自动生成，可修改' }),
+    h('p', { className: 'vp-hint' }, '新情绪默认「不使用」，挂上引擎后才会进入提示词。'),
+    h('div', { className: 'acts' }, btn('取消', () => setModal(null)), btn('保存', saveEmotion, { className: 'primary' })))
+}
+function renderPresetName(){
+  return h('div', { className: 'vp-modal' }, h('h3', null, modal.mode === 'save' ? '保存为预设' : '修改预设'),
+    h('p', { className: 'vp-hint' }, modal.mode === 'save' ? '会把当前的情绪路由（每种情绪的引擎、指令、强度）与强度档位存为一套预设；引擎列表不在预设里。' : '会把当前情绪路由与强度档位写回这套预设；改名字就是另存一套。'),
+    field('预设名称', modal.name || '', v => setModal(m => ({ ...m, name: v })), { placeholder: '例如 玉玲珑 / 沈妙安静版' }),
+    h('div', { className: 'acts' }, btn('取消', () => setModal(null)), btn('确定', presetOk, { className: 'primary' })))
+}
+function renderConfirm(title, text, onYes){
+  return h('div', { className: 'vp-modal' }, h('h3', null, title), h('p', { className: 'vp-hint', style: { fontSize: '13px', marginTop: '8px' } }, text),
+    h('div', { className: 'acts' }, btn('取消', () => setModal(null)), btn('确认删除', () => { onYes() }, { className: 'danger' })))
+}
 }

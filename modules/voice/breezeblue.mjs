@@ -94,6 +94,7 @@ export function buildTtsRequest(text, raw) {
   // Stay under the documented default quota; do not silently truncate or multiply paid calls.
   if (Array.from(clean).length > 1000) throw new BreezeError('Breeze 单次最多 1000 个字符，请拆成多条语音；本模块不会自动拆单扣费。', 'TEXT_TOO_LONG')
   const config = normalizeSettings(raw)
+  const base = typeof raw.base === 'string' && /^https?:\/\//.test(raw.base) ? raw.base.replace(/\/+$/, '') : API_BASE
   // 五字段请求形状（矩阵实测最稳）：文本 / 可选指令 / 模型 / 语言 / {guidance_scale, use_speaker_boost}。
   const body = {
     text: clean,
@@ -103,12 +104,12 @@ export function buildTtsRequest(text, raw) {
   if (config.languageCode) body.language_code = config.languageCode
   if (config.instructions) body.instructions = config.instructions
   config.cacheKey = createHash('sha256').update(JSON.stringify({
-    text: clean, voiceId: config.voiceId, modelId: config.modelId, languageCode: config.languageCode,
+    text: clean, base, voiceId: config.voiceId, modelId: config.modelId, languageCode: config.languageCode,
     instructions: config.instructions, guidanceScale: config.guidanceScale, speakerBoost: config.speakerBoost, outputFormat: config.outputFormat,
   })).digest('hex')
   return {
     config,
-    url: `${API_BASE}/text-to-speech/${encodeURIComponent(config.voiceId)}?output_format=${encodeURIComponent(config.outputFormat)}&delivery=sync`,
+    url: `${base}/text-to-speech/${encodeURIComponent(config.voiceId)}?output_format=${encodeURIComponent(config.outputFormat)}&delivery=sync`,
     init: { method: 'POST', redirect: 'error', headers: { 'xi-api-key': config.apiKey,
       'content-type': 'application/json', accept: config.outputFormat.startsWith('mp3') ? 'audio/mpeg' : 'audio/wav' },
     body: JSON.stringify(body) },
@@ -254,6 +255,7 @@ export function createBreezeClient({ fetchImpl = (...args) => globalThis.fetch(.
     },
     async voices(raw, { type = 'personal', search = '', pageToken = '', page = 1 } = {}) {
       const config = normalizeSettings(raw, { requireVoice: false })
+      const base = typeof raw.base === 'string' && /^https?:\/\//.test(raw.base) ? raw.base.replace(/\/+$/, '') : API_BASE
       if (!['personal', 'default', 'all'].includes(type)) throw new BreezeError('音色来源筛选无效。', 'INVALID_CONFIG')
       if (typeof search !== 'string' || search.length > 120 || typeof pageToken !== 'string' || pageToken.length > 8192) throw new BreezeError('音色筛选参数无效。', 'INVALID_CONFIG')
       if (!Number.isInteger(page) || page < 1 || page > 10000) throw new BreezeError('页码无效。', 'INVALID_CONFIG')
@@ -261,7 +263,7 @@ export function createBreezeClient({ fetchImpl = (...args) => globalThis.fetch(.
       if (search.trim()) query.set('search', search.trim())
       if (pageToken) query.set('next_page_token', pageToken)
       else query.set('page', String(page))
-      const data = await request(`${API_BASE}/voices?${query}`, { method: 'GET', redirect: 'error',
+      const data = await request(`${base}/voices?${query}`, { method: 'GET', redirect: 'error',
         headers: { 'xi-api-key': config.apiKey, accept: 'application/json' } }, config, MAX_JSON_BYTES, false, requestSignal(Math.min(config.timeoutMs, 30000)))
       if (!Array.isArray(data.voices)) throw new BreezeError('Breeze 音色列表缺少 voices 数组。', 'INVALID_RESPONSE')
       return {

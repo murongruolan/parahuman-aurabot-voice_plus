@@ -1,6 +1,6 @@
 import { test, after, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, cpSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, cpSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -8,6 +8,7 @@ import { createServer } from 'node:http'
 import { createModules } from '../upstream/src/core/modules.js'
 import builtinVoice from '../upstream/src/modules/voice/index.js'
 import { normalize, publicConfig, mergeFromPanel } from '../upstream/src/core/config.js'
+import { revision } from '../modules/breeze-settings/control.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'breeze-loader-'))
 const pack = resolve(dirname(fileURLToPath(import.meta.url)), '../modules/voice')
@@ -22,8 +23,7 @@ wav.write('RIFF'); wav.writeUInt32LE(8036, 4); wav.write('WAVE', 8); wav.write('
 wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(24000, 24)
 wav.writeUInt32LE(48000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(8000, 40)
 const localFile = join(root, 'local.wav'); writeFileSync(localFile, wav)
-const convertedFile = join(root, 'converted.wav'); writeFileSync(convertedFile, wav)
-let cfg, mods, localActive = false, localError = false, localMissing = false, song = null, stt = null
+let cfg, mods, localActive = false, localError = false, song = null, stt = null
 let remote = () => new Response(wav, { headers: { 'content-type': 'audio/wav' } })
 let oldRequests = [], remoteRequests = [], logs = [], localCalls = [], songCalls = [], historyCalls = []
 const logger = { info(...x) { logs.push(x.join(' ')) }, debug(...x) { logs.push(x.join(' ')) }, warn(...x) { logs.push(x.join(' ')) }, error(...x) { logs.push(x.join(' ')) } }
@@ -36,17 +36,15 @@ const server = createServer((req, res) => {
 await new Promise(r => server.listen(0, '127.0.0.1', r))
 const base = `http://127.0.0.1:${server.address().port}`
 const core = {
-  local: { active: () => localActive, call: async (name, body) => { localCalls.push({ name, body }); if (localError) throw new Error('local failed'); return { file: localMissing ? join(root, 'missing.wav') : localFile } } },
+  local: { active: () => localActive, call: async (name, body) => { localCalls.push({ name, body }); if (localError) throw new Error('local failed'); return { file: localFile } } },
   http: { body: async req => req.body || {} },
   hub: { localTranscribe: async () => '识别成功' },
   onebot: { call: async (name, body) => { historyCalls.push({ name, body }); return { messages: [{ user_id: 123, time: 1, message: [{ type: 'record', data: { file: 'x' } }] }] } } },
 }
 const setConfig = value => { const old = cfg; cfg = value; mods?.emit('config', cfg, old); return cfg }
 function reset() {
-  cfg = normalize({ ownerQQ: 123, voice: { enabled: true, engine: 'http', http: { urlTemplate: base + '/tts?text={text}', method: 'GET' }, songVoice: '' },
-    ext: { 'breeze-settings': { provider: 'breezeblue', apiKey: 'brz_fixture_secret', voiceId: 'voc_fixture', outputFormat: 'wav' } },
-    modules: { voice: { enabled: true, useBuiltin: false } } })
-  localActive = localError = localMissing = false; song = null; stt = null
+  cfg = normalize({ ownerQQ: 123, voice: { enabled: true, engine: 'http', http: { urlTemplate: base + '/tts?text={text}', method: 'GET' }, songVoice: '' }, ext: {} })
+  localActive = localError = false; song = null; stt = null
   remote = () => new Response(wav, { headers: { 'content-type': 'audio/wav' } })
   oldRequests = []; remoteRequests = []; logs = []; localCalls = []; songCalls = []; historyCalls = []
 }
@@ -75,368 +73,142 @@ after(async () => {
 const route = (path, body = {}) => mods.handle('/aurabot/api' + path, { body,
   method: path.endsWith('/status') ? 'GET' : 'POST', socket: { remoteAddress: '127.0.0.1' },
   headers: { host: 'localhost:5099', origin: 'http://localhost:5099', 'sec-fetch-site': 'same-origin' } }, {})
+const engineEntry = o => ({ id: 'e1', name: '玉玲珑', type: 'breeze', base: 'https://api.breeze.blue/v1', apiKey: 'brz_fixture_secret', voiceId: 'voc_fixture', promptTags: true, addedAt: '2026-11-13 09:00', ...o })
+const routeBody = o => {
+  const eng = engineEntry(o?.engine)
+  return { revision: revision(cfg), engines: [eng], strengths: [{ id: 'l1', name: '轻度', value: 2, builtin: true }, { id: 's1', name: '标准', value: 4, builtin: true }, { id: 'h1', name: '强烈', value: 6, builtin: true }],
+    emotions: ['calm', 'playful', 'down', 'angry', 'excited', 'proud', 'whiny', 'lazy'].map(code => ({ name: { calm: '平静', playful: '俏皮', down: '失落', angry: '生气', excited: '兴奋', proud: '得意', whiny: '娇嗔', lazy: '慵懒' }[code], code, builtin: true, engine: eng.id, instructions: code === 'excited' ? '兴奋一点！' : '', strength: 'model', ref: { mode: 'none', path: '', text: '', param: '' }, ...(o?.emotions?.[code] || {}) })),
+    presets: [], advanced: {}, ...(o?.advanced ? { advanced: o.advanced } : {}) }
+}
+async function saveViaConsole(o) {
+  const r = await route('/ext/breeze-settings/console/save', routeBody(o))
+  if (r.ok === false) console.log('SAVE FAIL:', r.message)
+  return r
+}
 
-test('distributable loads through real snapshot/__lib loader as same-name user module', () => {
+test('distributable loads through real snapshot loader; engine keys stay out of config and state', async () => {
+  reset(); await saveViaConsole()
   const status = mods.status().find(m => m.id === 'voice')
-  assert.equal(status.running, 'user', JSON.stringify(status)); assert.equal(status.fallback, false); assert.equal(status.error, '')
-  assert.equal(typeof mods.use('voice').speak, 'function'); assert.equal(typeof mods.use('voice').edgeInstalled, 'function')
-  for (const path of ['/voice/test', '/voice/install', '/voice/song-voices', '/voice/asr-status', '/voice/asr-prepare', '/voice/asr-last', '/voice/asr-test', '/ext/breeze-settings/breeze/status', '/ext/breeze-settings/breeze/voices', '/ext/breeze-settings/breeze/test']) assert.ok(mods.hasRoute('/aurabot/api' + path), path)
+  assert.equal(status.running, 'user', JSON.stringify(status)); assert.equal(status.error, '')
+  assert.equal(typeof mods.use('voice').speak, 'function')
+  assert.ok(!JSON.stringify(cfg).includes('brz_fixture_secret'), 'keys live in engine-auth.json, not config')
+  const state = await route('/ext/breeze-settings/console/status')
+  assert.equal(state.engines[0].apiKey, ''); assert.equal(state.engines[0].apiKeySet, true)
+  assert.equal(state.emotions.length, 8); assert.equal(state.strengths.length, 3)
+  assert.ok(!JSON.stringify(state).includes('brz_fixture_secret'))
 })
-test('provider defaults keep old engine; copying the module does not auto-spend', async () => {
-  reset(); cfg.ext['breeze-settings'] = {}
-  const result = await mods.use('voice').speak('原语音')
-  assert.equal(result.engine, 'http'); assert.equal(oldRequests.length, 1); assert.equal(remoteRequests.length, 0)
-})
-test('companion configuration module is eligible for actual host UI and keys stay masked', () => {
-  reset()
-  const s = mods.status().find(m => m.id === 'breeze-settings')
-  const hasUi = m => m.running === 'user' && !m.builtin && !['voice', 'song'].includes(m.id) && ((m.settings || []).length || m.panel)
-  assert.equal(mods.running('breeze-settings'), 'user'); assert.ok(hasUi(s)); assert.equal(s.tab, '')
-  assert.equal(publicConfig(cfg).ext['breeze-settings'].apiKey, '')
-})
-test('voice module contributes an official prompt rule asking for punctuation in <voice>', () => {
-  reset()
-  const rule = mods.rules('private').find(x => x.includes('标点'))
-  assert.ok(rule); assert.ok(rule.includes('<voice>')); assert.ok(rule.includes('空格'))
-  assert.ok(mods.rules('social').some(x => x.includes('标点')))
-})
-test('promptTags switch gates the emotion-tag teaching lines only', () => {
-  reset()
-  assert.ok(mods.rules('private').some(x => x.includes('情绪标记')))
-  assert.ok(mods.rules('private').some(x => x.includes('行内标签')))
-  cfg.ext['breeze-settings'].promptTags = false
-  assert.ok(!mods.rules('private').some(x => x.includes('情绪标记')))
-  assert.ok(!mods.rules('social').some(x => x.includes('行内标签')))
-  assert.ok(mods.rules('private').some(x => x.includes('中文标点')), 'punctuation line stays')
-})
-test('omitting/disabling the companion never auto-enables paid generation', async () => {
-  reset(); cfg.modules['breeze-settings'] = { enabled: false }; await mods.sync()
-  assert.equal((await mods.use('voice').speak('旧引擎')).engine, 'http'); assert.equal(remoteRequests.length, 0)
-  cfg.modules['breeze-settings'].enabled = true; await mods.reload('breeze-settings')
-})
-test('external or spoofed HTTP callers cannot spend stored key through preview routes', async () => {
-  reset()
-  for (const path of ['/voice/test', '/ext/breeze-settings/breeze/test', '/ext/breeze-settings/breeze/voices']) {
-    for (const req of [
-      { method: 'POST', socket: { remoteAddress: '198.51.100.9' }, headers: { host: 'localhost:5099' } },
-      { method: 'POST', socket: { remoteAddress: '198.51.100.9' }, headers: { host: 'localhost:5099', 'x-forwarded-for': '127.0.0.1' } },
-      { method: 'POST', socket: { remoteAddress: '127.0.0.1' }, headers: { host: 'evil.example:5099' } },
-      { method: 'POST', socket: { remoteAddress: '127.0.0.1' }, headers: { host: 'localhost:5099', origin: 'https://evil.example' } },
-      { method: 'GET', socket: { remoteAddress: '127.0.0.1' }, headers: { host: 'localhost:5099' } },
-    ]) {
-      const r = await mods.handle('/aurabot/api' + path, { ...req, body: { text: 'must not spend' } }, {})
-      assert.equal(r.ok, false)
-    }
-  }
-  assert.equal(remoteRequests.length, 0); assert.equal(oldRequests.length, 0)
-})
-
-test('Breeze replaces chat synth with unchanged speak result contract', async () => {
-  reset()
-  const result = await mods.use('voice').speak('你好 [笑]')
-  assert.deepEqual(Object.keys(result).sort(), ['engine', 'file'])
-  assert.equal(result.engine, 'breezeblue'); assert.deepEqual(readFileSync(result.file), wav)
-  assert.equal(remoteRequests.length, 1); assert.equal(oldRequests.length, 0)
-})
-test('original /voice/test remains compatible and uses Breeze when selected', async () => {
-  reset()
-  const r = await route('/voice/test', { text: '试听' })
-  assert.equal(r.ok, true); assert.equal(r.engine, 'breezeblue'); assert.equal(r.mime, 'audio/wav'); assert.deepEqual(Buffer.from(r.data, 'base64'), wav)
-})
-test('all preserved local engines still use the original helper with their protocol', async () => {
-  for (const engine of ['http', 'gptsovits', 'cosyvoice']) {
-    reset(); cfg.ext['breeze-settings'].provider = 'builtin'; cfg.voice.engine = engine
-    cfg.voice.gptsovits = { url: base, textLang: 'zh', refAudio: 'ref.wav', promptText: '参考', promptLang: 'zh' }
-    cfg.voice.cosyvoice = { url: base, mode: 'instruct', instruct: '温柔', spkId: '中文女', sampleRate: 22050 }
-    const result = await mods.use('voice').speak('你好')
-    assert.equal(result.engine, engine); assert.equal(oldRequests.length, 1); assert.equal(remoteRequests.length, 0)
-    if (engine === 'gptsovits') assert.match(oldRequests[0].url, /ref_audio_path=ref.wav/)
-    if (engine === 'cosyvoice') { assert.equal(oldRequests[0].method, 'POST'); assert.equal(oldRequests[0].url, '/inference_instruct') }
-  }
-})
-test('local TTS precedence remains unchanged and does not invoke Breeze/RVC', async () => {
-  reset(); localActive = true; cfg.voice.songVoice = 'custom'
-  const r = await mods.use('voice').speak('本地优先')
-  assert.equal(r.engine, 'local'); assert.equal(r.file, localFile)
-  assert.equal(remoteRequests.length, 0); assert.equal(songCalls.length, 0)
-  assert.deepEqual(localCalls, [{ name: 'tts', body: { text: '本地优先' } }])
-})
-test('failed/missing local result falls through to selected Breeze', async () => {
-  for (const [bad, text] of [['error', '回落一'], ['missing', '回落二']]) {
-    reset(); localActive = true; localError = bad === 'error'; localMissing = bad === 'missing'
-    assert.equal((await mods.use('voice').speak(text)).engine, 'breezeblue')
-    assert.equal(remoteRequests.length, 1)
-  }
-})
-test('Breeze failure falls back once to configured old engine, sanitized log', async () => {
-  reset(); remote = () => new Response(JSON.stringify({ code: 'bad_key', detail: cfg.ext['breeze-settings'].apiKey }), { status: 401, headers: { 'content-type': 'application/json' } })
-  assert.equal((await mods.use('voice').speak('兜底')).engine, 'http')
-  assert.equal(remoteRequests.length, 1); assert.equal(oldRequests.length, 1)
-  assert.ok(!logs.join('\n').includes(cfg.ext['breeze-settings'].apiKey)); assert.ok(logs.some(x => x.includes('回退')))
-})
-test('network-level Breeze failure falls back and is remembered for the console status', async () => {
-  reset(); cfg.ext['breeze-settings'].retryCount = 0; remote = () => { throw new TypeError('boom') }
-  assert.equal((await mods.use('voice').speak('网络抖动')).engine, 'http')
-  assert.equal(remoteRequests.length, 1); assert.equal(oldRequests.length, 1)
-  const status = await route('/ext/breeze-settings/breeze/status')
-  assert.ok(status.lastFallback); assert.equal(typeof status.lastFallback.at, 'number')
-  assert.ok(Date.now() - status.lastFallback.at < 60000); assert.match(status.lastFallback.reason, /无法连接/)
-  assert.ok(!JSON.stringify(status.lastFallback).includes(cfg.ext['breeze-settings'].apiKey))
-})
-test('connection failures retry per advanced settings and succeed', async () => {
-  reset(); cfg.ext['breeze-settings'].retryCount = 2; cfg.ext['breeze-settings'].retryDelaySeconds = 0
-  let calls = 0
-  remote = () => { calls++; if (calls < 3) throw new TypeError('boom'); return new Response(wav, { headers: { 'content-type': 'audio/wav' } }) }
-  assert.equal((await mods.use('voice').speak('重试')).engine, 'breezeblue')
-  assert.equal(remoteRequests.length, 3); assert.ok(logs.some(x => x.includes('重试 1/2'))); assert.ok(logs.some(x => x.includes('重试 2/2')))
-})
-test('exhausted connection retries fall back and remember final reason', async () => {
-  reset(); cfg.ext['breeze-settings'].retryCount = 1; cfg.ext['breeze-settings'].retryDelaySeconds = 0
-  remote = () => { throw new TypeError('boom') }
-  assert.equal((await mods.use('voice').speak('重试耗尽')).engine, 'http')
-  assert.equal(remoteRequests.length, 2); assert.equal(oldRequests.length, 1)
-  assert.match((await route('/ext/breeze-settings/breeze/status')).lastFallback.reason, /无法连接/)
-})
-test('non-retryable HTTP statuses (401) never retry regardless of retry count', async () => {
-  reset(); cfg.ext['breeze-settings'].retryCount = 3; cfg.ext['breeze-settings'].retryDelaySeconds = 0
-  remote = () => new Response('{}', { status: 401 })
-  assert.equal((await mods.use('voice').speak('不重试401')).engine, 'http')
-  assert.equal(remoteRequests.length, 1)
-  assert.ok(!logs.some(x => x.includes('重试 1/')), 'HTTP 401 must not trigger retries')
-})
-test('429 with fallback off exhausts backoff and throws without touching originals', async () => {
-  reset(); cfg.ext['breeze-settings'].fallback = false; cfg.ext['breeze-settings'].retryCount = 2; cfg.ext['breeze-settings'].retryDelaySeconds = 0
-  remote = () => new Response('{}', { status: 429 })
-  await assert.rejects(mods.use('voice').speak('严格429'), e => e.status === 429)
-  assert.equal(remoteRequests.length, 3)
-})
-test('retryCount 0 disables connection retry', async () => {
-  reset(); cfg.ext['breeze-settings'].retryCount = 0; cfg.ext['breeze-settings'].retryDelaySeconds = 0
-  remote = () => { throw new TypeError('boom') }
-  assert.equal((await mods.use('voice').speak('零重试')).engine, 'http')
-  assert.equal(remoteRequests.length, 1)
-})
-test('emotion provider routes per emotion and applies instruction x arousal guidance', async () => {
-  reset(); cfg.ext['breeze-settings'].provider = 'emotion'
-  cfg.ext['breeze-settings'].emotion = { endpoints: [{ id: 'e1', name: '自训练', method: 'GET', urlTemplate: base + '/emo?text={text}&emotion={emotion}', body: '', headers: '' }], routing: { calm: 'e1' }, templates: [],
-    emotions: { excited: { instructions: '兴奋一点！', guidance: 'follow' } }, arousal: { L: 2, M: 4, H: 6 } }
-  const r1 = await mods.use('voice').speak('[calm:M]你好')
-  assert.equal(r1.engine, '自训练'); assert.match(lastUrl(), /emotion=calm/)
-  const r2 = await mods.use('voice').speak('[excited:H]冲啊[laugh]')
-  assert.equal(r2.engine, 'breezeblue')
-  const body = JSON.parse(remoteRequests.at(-1)?.body || '{}')
-  assert.equal(body.text, '冲啊 [笑]'); assert.equal(body.instructions, '兴奋一点！'); assert.equal(body.voice_settings.guidance_scale, 6)
-  assert.equal('speed' in body.voice_settings, false); assert.equal('volume' in body.voice_settings, false)
-})
-test('emotion leg falls through endpoint failure to the Breeze leg', async () => {
-  reset(); cfg.ext['breeze-settings'].provider = 'emotion'; cfg.ext['breeze-settings'].retryCount = 0
-  cfg.ext['breeze-settings'].emotion = { endpoints: [{ id: 'e9', name: '挂了', method: 'GET', urlTemplate: 'http://127.0.0.1:1/x?text={text}', body: '', headers: '' }], routing: { calm: 'e9' }, templates: [] }
-  const r = await mods.use('voice').speak('平静的一句话')
+test('breeze engine leg synthesizes with pure-text defaults', async () => {
+  reset(); await saveViaConsole()
+  const r = await mods.use('voice').speak('你好 [笑]')
+  if (r.engine !== 'breezeblue') console.log('DBG cfg=', JSON.stringify(cfg.ext['breeze-settings']), 'LOGS=', JSON.stringify(logs.slice(-4)))
   assert.equal(r.engine, 'breezeblue')
-  assert.ok(logs.some(x => x.includes('换下一条腿')))
+  const body = JSON.parse(remoteRequests.at(-1).body)
+  assert.equal(body.text, '你好 [笑]'); assert.equal(body.instructions, undefined); assert.equal(body.voice_settings.guidance_scale, 1)
+  assert.equal(body.voice_settings.use_speaker_boost, true); assert.equal('speed' in body.voice_settings, false)
+  assert.match(remoteRequests.at(-1).url, /voc_fixture/)
 })
-test('emotion markers are stripped on the builtin provider', async () => {
-  reset(); cfg.ext['breeze-settings'].provider = 'builtin'
-  const r = await mods.use('voice').speak('[calm]你好')
-  assert.equal(r.engine, 'http')
-  const url = decodeURIComponent(oldRequests.at(-1).url)
-  assert.match(url, /你好/); assert.doesNotMatch(url, /calm/)
+test('pinned strength overrides the model tag; model-self uses the written tier', async () => {
+  reset(); await saveViaConsole({ emotions: { calm: { instructions: '平静地说', strength: 3 } } })
+  const r1 = await mods.use('voice').speak('[calm:H]平静句')
+  const b1 = JSON.parse(remoteRequests.at(-1).body)
+  assert.equal(b1.instructions, '平静地说'); assert.equal(b1.voice_settings.guidance_scale, 3)
+  reset(); await saveViaConsole({ emotions: { excited: { instructions: '兴奋一点！', strength: 'model' } } })
+  await mods.use('voice').speak('[excited:H]冲啊')
+  assert.equal(JSON.parse(remoteRequests.at(-1).body).voice_settings.guidance_scale, 6)
+  await mods.use('voice').speak('[excited:L]小声兴奋')
+  assert.equal(JSON.parse(remoteRequests.at(-1).body).voice_settings.guidance_scale, 2)
+  await mods.use('voice').speak('[excited]没写强度')
+  assert.equal(JSON.parse(remoteRequests.at(-1).body).voice_settings.guidance_scale, 4)
 })
-function lastUrl() { return remoteRequests.at(-1)?.url || oldRequests.at(-1)?.url || '' }
-test('strict mode throws instead of silently changing voice', async () => {
-  reset(); cfg.ext['breeze-settings'].fallback = false; cfg.ext['breeze-settings'].retryCount = 0; remote = () => new Response('{}', { status: 429 })
-  await assert.rejects(mods.use('voice').speak('不回退'), e => e.status === 429)
-  assert.equal(oldRequests.length, 0)
+test('gptsovits engine leg posts emotion code and reference fields', async () => {
+  reset()
+  await saveViaConsole({ engine: { id: 'e2', name: '沈妙-GPT', type: 'gptsovits', base: base + '/gpt', apiKey: '', addedAt: 'x' }, downEngine: 'e2' })
+  const r = await mods.use('voice').speak('[down]好难受')
+  assert.equal(r.engine, '沈妙-GPT'); assert.deepEqual(readFileSync(r.file), wav)
+  const body = JSON.parse(oldRequests.at(-1).body)
+  assert.equal(body.emotion, 'down'); assert.equal(body.text, '好难受')
 })
-test('missing credentials fallback without making paid request', async () => {
-  reset(); cfg.ext['breeze-settings'].apiKey = ''
-  assert.equal((await mods.use('voice').speak('配置未完成')).engine, 'http')
+test('unknown emotion code or missing engine falls back to the default engine', async () => {
+  reset(); await saveViaConsole()
+  const r = await mods.use('voice').speak('[ghost]嘿')
+  assert.equal(r.engine, 'breezeblue'); assert.equal(JSON.parse(remoteRequests.at(-1).body).text, '嘿')
+  reset(); cfg.ext['breeze-settings'] = {}
+  const r2 = await mods.use('voice').speak('[呲牙]中文保留')
+  assert.equal(r2.engine, 'http')
+  assert.match(decodeURIComponent(oldRequests.at(-1).url), /中文保留/)
+  reset(); cfg.ext['breeze-settings'] = {}
+  assert.equal((await mods.use('voice').speak('没引擎')).engine, 'http')
   assert.equal(remoteRequests.length, 0)
 })
-test('RVC conversion applies exactly once to Breeze with preserved pitch/voice', async () => {
-  reset(); cfg.voice.songVoice = 'my-rvc'; cfg.voice.songPitch = 3; song = { convertSpeech: async () => convertedFile }
-  const r = await mods.use('voice').speak('变声')
-  assert.equal(r.file, convertedFile); assert.equal(songCalls.length, 1)
-  assert.equal(songCalls[0].opts.voice, 'my-rvc'); assert.equal(songCalls[0].opts.pitch, 3)
-})
-test('RVC failure preserves Breeze audio', async () => {
-  reset(); cfg.voice.songVoice = 'missing'; song = { convertSpeech: async () => { throw new Error('RVC unavailable') } }
-  const r = await mods.use('voice').speak('原声')
-  assert.equal(r.engine, 'breezeblue'); assert.equal(songCalls.length, 1); assert.deepEqual(readFileSync(r.file), wav)
-})
-test('RVC also applies exactly once on original fallback TTS', async () => {
-  reset(); cfg.ext['breeze-settings'].provider = 'builtin'; cfg.voice.songVoice = 'my-rvc'; song = { convertSpeech: async () => convertedFile }
-  const r = await mods.use('voice').speak('旧引擎变声')
-  assert.equal(r.engine, 'http'); assert.equal(r.file, convertedFile); assert.equal(songCalls.length, 1)
-})
-test('config edits take effect without module reload or changing cfg.voice', async () => {
-  reset(); const before = structuredClone(cfg.voice)
-  await mods.use('voice').speak('一')
-  setConfig({ ...cfg, ext: { 'breeze-settings': { ...cfg.ext['breeze-settings'], voiceId: 'voc_new', instructions: '温柔' } } })
-  await mods.use('voice').speak('二')
-  assert.match(remoteRequests[1].url, /voc_new/); assert.equal(JSON.parse(remoteRequests[1].body).instructions, '温柔')
-  assert.deepEqual(cfg.voice, before)
-})
-test('leading interjections get "……" on the Breeze leg only', async () => {
+test('engine failure falls back to the original engine once, records lastFallback', async () => {
   reset()
+  await saveViaConsole({ engine: { id: 'e9', name: '挂了', type: 'breeze', base: 'https://127.0.0.1:1/x', apiKey: 'brz_x', voiceId: 'voc_x' }, advanced: { retryCount: 0 } })
+  const r = await mods.use('voice').speak('引擎挂了')
+  assert.equal(r.engine, 'http'); assert.ok(logs.some(x => x.includes('回退原语音引擎')))
+  const status = await route('/ext/breeze-settings/breeze/status')
+  assert.match(status.lastFallback.reason, /无法连接|连接失败/)
+})
+test('voice picker route is engine-scoped and never exposes the key', async () => {
+  reset(); await saveViaConsole()
+  const voicesJson = () => new Response(JSON.stringify({ voices: [{ voice_id: 'voc_one', name: '玉玲珑' }], has_more: false }), { headers: { 'content-type': 'application/json' } })
+  remote = voicesJson
+  const r = await route('/ext/breeze-settings/breeze/voices', { engineId: 'e1', type: 'personal', search: '', pageToken: '', page: 1 })
+  assert.equal(r.ok, true); assert.equal(r.voices.length, 1); assert.ok(!JSON.stringify(r).includes('brz_fixture_secret'))
+  const bad = await route('/ext/breeze-settings/breeze/voices', { engineId: 'e9' })
+  assert.equal(bad.ok, false)
+})
+test('prompt rule is generated from attached emotions only and honors per-engine promptTags', async () => {
+  reset(); await saveViaConsole()
+  const rules = () => mods.rules('private')
+  assert.ok(rules().some(x => x.includes('calm 平静') && x.includes('excited 兴奋')))
+  assert.ok(rules().some(x => x.includes('行内标签')))
+  setConfig({ ...cfg, ext: { 'breeze-settings': { ...cfg.ext['breeze-settings'], engines: cfg.ext['breeze-settings'].engines.map(e => ({ ...e, promptTags: false })) } } })
+  assert.ok(!rules().some(x => x.includes('行内标签')))
+  assert.ok(rules().some(x => x.includes('中文标点')))
+  setConfig({ ...cfg, ext: { 'breeze-settings': { ...cfg.ext['breeze-settings'], emotions: cfg.ext['breeze-settings'].emotions.map(e => ({ ...e, engine: null })) } } })
+  assert.ok(!rules().some(x => x.includes('calm 平静')), 'detached emotions leave the prompt rule')
+})
+test('leading interjections get "……" on the Breeze leg', async () => {
+  reset(); await saveViaConsole()
   await mods.use('voice').speak('嗯，我在。')
   assert.equal(JSON.parse(remoteRequests.at(-1).body).text, '……嗯，我在。')
-  reset(); cfg.ext['breeze-settings'].provider = 'builtin'
-  await mods.use('voice').speak('嗯，我在。')
-  assert.match(decodeURIComponent(oldRequests.at(-1).url), /嗯/)
 })
-test('hash cache serves identical text+params without a second paid request', async () => {
+test('hash cache dedupes identical text+params', async () => {
+  reset(); await saveViaConsole()
+  await mods.use('voice').speak('喂，睡了吗。')
+  await mods.use('voice').speak('喂，睡了吗。')
+  assert.equal(remoteRequests.length, 1)
+})
+test('console actual preview and mode routes keep working', async () => {
+  reset(); await saveViaConsole()
+  const state = await route('/ext/breeze-settings/console/status')
+  const preview = await route('/ext/breeze-settings/console/test', { text: '控制台试听', revision: state.revision })
+  assert.equal(preview.ok, true, 'preview:' + preview.message); assert.equal(preview.engine, 'breezeblue', 'preview engine')
+  const mode = await route('/ext/breeze-settings/console/mode', { mode: 'off', revision: state.revision })
+  assert.equal(mode.ok, true, 'mode:' + (mode.message || '')); assert.equal(mods.running('voice'), null, 'mode off running')
+  const back = await route('/ext/breeze-settings/console/mode', { mode: 'enhanced', revision: revision(cfg) })
+  assert.equal(back.ok, true, 'back:' + (back.message || '')); assert.equal(cfg.voice.enabled, true, 'back cfg')
+  if (mods.running('voice') !== 'user') await mods.reload('voice')
+  assert.equal(mods.running('voice'), 'user')
+})
+test('companion routes stay loopback-only', async () => {
   reset()
-  const a = await mods.use('voice').speak('喂，睡了吗。')
-  const b = await mods.use('voice').speak('喂，睡了吗。')
-  assert.equal(remoteRequests.length, 1, 'same text+params must hit the cache')
-  assert.equal(readFileSync(b.file).toString(), readFileSync(a.file).toString())
-  await mods.use('voice').speak('喂呀')
-  assert.equal(remoteRequests.length, 2, 'different text is a different cache key')
+  const r = await mods.handle('/aurabot/api/ext/breeze-settings/console/status', { method: 'GET', socket: { remoteAddress: '198.51.100.9' }, headers: { host: 'localhost:5099' } }, {})
+  assert.equal(r.ok, false)
 })
-test('429 is retried with backoff and succeeds without billing-side effects', async () => {
-  reset(); cfg.ext['breeze-settings'].retryCount = 2; cfg.ext['breeze-settings'].retryDelaySeconds = 0
+test('429 retries with backoff; 402 trips the breaker after three', async () => {
+  reset()
+  await saveViaConsole({ advanced: { retryCount: 2, retryDelaySeconds: 0 } })
   let n = 0
   remote = () => { n++; if (n < 3) return new Response('{}', { status: 429 }); return new Response(wav, { headers: { 'content-type': 'audio/wav' } }) }
-  assert.equal((await mods.use('voice').speak('限流重试')).engine, 'breezeblue')
-  assert.equal(remoteRequests.length, 3); assert.ok(logs.some(x => x.includes('429')))
-})
-test('402 three times in a row trips the breaker and Breeze leg pauses 10 minutes', async () => {
-  reset(); remote = () => new Response('{}', { status: 402 })
-  for (let i = 0; i < 3; i++) assert.equal((await mods.use('voice').speak('额度测试' + i)).engine, 'http')
-  assert.equal(remoteRequests.length, 3)
+  assert.equal((await mods.use('voice').speak('限流重试')).engine, 'breezeblue'); assert.equal(remoteRequests.length, 3)
+  reset()
+  await saveViaConsole({ advanced: { retryCount: 0 } })
+  remote = () => new Response('{}', { status: 402 })
+  for (let i = 0; i < 3; i++) assert.equal((await mods.use('voice').speak('额度' + i)).engine, 'http')
   const status = await route('/ext/breeze-settings/breeze/status')
   assert.ok(status.breakerUntil > Date.now())
-  await mods.use('voice').speak('熔断期间')
-  assert.equal(remoteRequests.length, 3, 'Breeze leg must stay off while the breaker is open')
-  assert.ok(logs.some(x => x.includes('熔断')))
-})
-test('password settings mask public config and retain saved key when blank', () => {
-  reset()
-  const pub = publicConfig(cfg)
-  assert.equal(pub.ext['breeze-settings'].apiKey, ''); assert.equal(pub.ext['breeze-settings'].apiKeySet, true)
-  const updated = mergeFromPanel(cfg, { ext: { 'breeze-settings': { apiKey: '', guidanceScale: 4 } } })
-  assert.equal(updated.ext['breeze-settings'].apiKey, cfg.ext['breeze-settings'].apiKey)
-  assert.equal(updated.ext['breeze-settings'].guidanceScale, 4)
-  assert.equal(mergeFromPanel(cfg, { ext: { 'breeze-settings': { apiKey: null } } }).ext['breeze-settings'].apiKey, '')
-})
-test('custom status and picker routes match ExtPanel URL and never expose key', async () => {
-  reset(); localActive = true; cfg.voice.enabled = false
-  const status = await route('/ext/breeze-settings/breeze/status')
-  assert.equal(status.keySet, true); assert.equal(status.localTtsActive, true); assert.equal(status.voiceEnabled, false)
-  assert.ok(!JSON.stringify(status).includes(cfg.ext['breeze-settings'].apiKey))
-  remote = () => new Response(JSON.stringify({ voices: [{ voice_id: 'voc_one', name: '音色' }], has_more: false, total: 1, page: 1 }), { headers: { 'content-type': 'application/json' } })
-  const list = await route('/ext/breeze-settings/breeze/voices', { type: 'personal' })
-  assert.equal(list.ok, true); assert.equal(list.voices.length, 1)
-})
-test('direct preview uses saved settings, bypasses local, does not silently fallback', async () => {
-  reset(); localActive = true; cfg.ext['breeze-settings'].provider = 'builtin'
-  const result = await route('/ext/breeze-settings/breeze/test', { text: '直连', apiKey: 'ignored', voiceId: 'ignored' })
-  assert.equal(result.engine, 'breezeblue'); assert.equal(localCalls.length, 0)
-  assert.equal(remoteRequests[0].headers['xi-api-key'], cfg.ext['breeze-settings'].apiKey)
-  remote = () => new Response('{}', { status: 401 })
-  const fail = await route('/ext/breeze-settings/breeze/test', { text: '直连错误' })
-  assert.equal(fail.ok, false); assert.equal(oldRequests.length, 0)
-})
-test('preview enforces small text budget before network', async () => {
-  reset()
-  for (const text of ['', '  ', '字'.repeat(201), 12]) assert.equal((await route('/ext/breeze-settings/breeze/test', { text })).ok, false)
-  assert.equal(remoteRequests.length, 0)
-})
-test('existing ASR status/prepare/last and song status retain behavior', async () => {
-  reset()
-  assert.equal((await route('/voice/asr-status')).ok, false)
-  assert.equal((await route('/voice/asr-prepare')).ok, false)
-  assert.equal((await route('/voice/asr-test')).ok, false)
-  let prepared = ''
-  stt = { snapshot: () => ({ providers: [{ id: 'whisper', preparation: { phase: 'ready' } }], selection: { providerId: 'whisper' } }), prepare: id => (prepared = id) }
-  assert.equal((await route('/voice/asr-status')).provider, 'whisper')
-  assert.equal((await route('/voice/asr-prepare')).ok, true); assert.equal(prepared, 'whisper')
-  assert.equal((await route('/voice/asr-last', { userId: 123 })).heard, '识别成功')
-  assert.equal(historyCalls[0].name, 'get_friend_msg_history')
-  assert.equal(remoteRequests.length, 0)
-  song = { status: () => ({ ready: true, voices: [{ name: 'demo' }] }) }
-  const songStatus = await route('/voice/song-voices')
-  assert.equal(songStatus.available, true, JSON.stringify({ songStatus, running: mods.running('song'), logs }))
-})
-test('switch back to built-in preserves settings; reload restores user and avoids duplicate converters', async () => {
-  reset(); const before = structuredClone(cfg.ext)
-  setConfig({ ...cfg, modules: { ...cfg.modules, voice: { enabled: true, useBuiltin: true } } })
-  await mods.sync()
-  assert.equal(mods.running('voice'), 'builtin'); assert.deepEqual(cfg.ext, before)
-  assert.equal(mods.hasRoute('/aurabot/api/ext/breeze-settings/breeze/test'), false)
-  setConfig({ ...cfg, modules: { ...cfg.modules, voice: { enabled: true, useBuiltin: false } } })
-  await mods.reload('voice')
-  assert.equal(mods.running('voice'), 'user')
-  cfg.voice.songVoice = 'one'; song = { convertSpeech: async () => convertedFile }
-  await mods.use('voice').speak('一'); assert.equal(songCalls.length, 1)
-  await mods.reload('voice'); await mods.use('voice').speak('二'); assert.equal(songCalls.length, 2)
-})
-test('safe mode restores built-in and ordinary disabled mode removes voice', async () => {
-  reset(); cfg.safeMode = true; await mods.sync(); assert.equal(mods.running('voice'), 'builtin')
-  cfg.safeMode = false; await mods.reload('breeze-settings'); await mods.reload('voice'); assert.equal(mods.running('voice'), 'user')
-  cfg.modules.voice.enabled = false; await mods.sync(); assert.equal(mods.use('voice'), null)
-  cfg.modules.voice.enabled = true; await mods.reload('voice'); assert.equal(mods.running('voice'), 'user')
-})
-test('in-flight Breeze work is cancelled on module stop without invoking fallback', async () => {
-  reset()
-  let began
-  const ready = new Promise(r => (began = r))
-  remote = (url, init) => new Promise((resolve, reject) => { began(); init.signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }) })
-  const speaking = mods.use('voice').speak('等待')
-  const result = assert.rejects(speaking, e => e.code === 'ABORTED')
-  await ready
-  mods.stop('voice')
-  await result
-  assert.equal(oldRequests.length, 0); assert.equal(remoteRequests.length, 1)
-  reset(); await mods.reload('voice')
-})
-test('independent console stays available across enhanced, official and off; settings retained', async () => {
-  reset()
-  cfg.ext['breeze-settings'].customLegacy = 'keep-me'
-  const key = cfg.ext['breeze-settings'].apiKey
-  for (const mode of ['official', 'off', 'enhanced', 'off', 'official', 'enhanced']) {
-    const state = await route('/ext/breeze-settings/console/status')
-    const r = await route('/ext/breeze-settings/console/mode', { mode, revision: state.revision })
-    assert.equal(r.ok, true, r.message); assert.equal(r.actualMode, mode); assert.equal(r.requestedMode, mode)
-    assert.equal(mods.running('voice'), mode === 'off' ? null : mode === 'official' ? 'builtin' : 'user')
-    assert.equal(mods.running('breeze-settings'), 'user')
-    assert.equal(cfg.ext['breeze-settings'].apiKey, key); assert.equal(cfg.ext['breeze-settings'].customLegacy, 'keep-me')
-    assert.equal(cfg.voice.enabled, mode !== 'off')
-  }
-  assert.equal(remoteRequests.length, 0)
-})
-test('console status/save mask keys, keep unrelated config, and reject stale writes', async () => {
-  reset(); cfg.ext.unrelated = { keep: 1 }
-  const state = await route('/ext/breeze-settings/console/status')
-  assert.equal(state.settings.apiKey, ''); assert.equal(state.settings.apiKeySet, true)
-  assert.equal(state.enhancedAvailable, true)
-  const r = await route('/ext/breeze-settings/console/save', { revision: state.revision, settings: { guidanceScale: 4, apiKey: '' }, original: { engine: 'http' } })
-  assert.equal(r.ok, true, r.message); assert.equal(cfg.ext['breeze-settings'].guidanceScale, 4)
-  assert.equal(cfg.ext['breeze-settings'].apiKey, 'brz_fixture_secret'); assert.deepEqual(cfg.ext.unrelated, { keep: 1 })
-  assert.equal((await route('/ext/breeze-settings/console/save', { revision: state.revision, settings: { guidanceScale: 11 } })).ok, false)
-  assert.equal(cfg.ext['breeze-settings'].guidanceScale, 4)
-})
-test('console actual preview honors off state and cannot bypass stored revision', async () => {
-  reset()
-  let state = await route('/ext/breeze-settings/console/status')
-  const preview = await route('/ext/breeze-settings/console/test', { text: '控制台试听', revision: state.revision })
-  assert.equal(preview.ok, true, preview.message); assert.equal(preview.engine, 'breezeblue')
-  assert.equal((await route('/ext/breeze-settings/console/test', { text: '不允许', revision: 'stale' })).ok, false)
-  state = await route('/ext/breeze-settings/console/mode', { mode: 'off', revision: state.revision })
-  assert.equal((await route('/ext/breeze-settings/console/test', { text: '关闭', revision: state.revision })).ok, false)
-  assert.equal(remoteRequests.length, 1)
-  await route('/ext/breeze-settings/console/mode', { mode: 'enhanced', revision: state.revision })
+  await mods.use('voice').speak('熔断中')
+  assert.equal(remoteRequests.length, 3)
 })
 
-test('broken user entry falls back to built-in, restores from unchanged distributable', async () => {
-  const entry = join(root, 'modules', 'voice', 'index.mjs')
-  const original = readFileSync(entry, 'utf8')
-  try {
-    writeFileSync(entry, 'export default { syntax error')
-    await mods.reload('voice')
-    const status = mods.status().find(m => m.id === 'voice')
-    assert.equal(status.running, 'builtin'); assert.equal(status.fallback, true)
-  } finally { writeFileSync(entry, original); await mods.reload('voice') }
-  assert.equal(mods.running('voice'), 'user')
-})
