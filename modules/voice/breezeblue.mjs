@@ -83,7 +83,8 @@ export function normalizeSettings(raw = {}, { requireVoice = true } = {}) {
 }
 
 // 合成模型会吞句首短语气词（嗯/喂/呜呜…）：句首挂"……"治愈（矩阵实测，幂等）。
-export const LEADING_FILL_RE = /^(.)\1*(?=[，。！？、—…～])/u
+// 前瞻含中英文标点（，。！？、—…～ 与 , . ! ? ~）：用户打字常中英文混用。
+export const LEADING_FILL_RE = /^(.)\1*(?=[，。！？、—…～,.!?~])/u
 
 export function buildTtsRequest(text, raw) {
   if (typeof text !== 'string' || !text.trim()) throw new BreezeError('没有要念的文字。', 'INVALID_TEXT')

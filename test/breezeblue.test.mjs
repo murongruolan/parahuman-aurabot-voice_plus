@@ -49,6 +49,10 @@ test('leading interjections get the "……" prefix; already-prefixed text is le
   assert.equal(body('呜呜呜…好难受'), '……呜呜呜…好难受')
   assert.equal(body('你好，吃了吗'), '你好，吃了吗')
   assert.equal(body('嗯'), '嗯')
+  assert.equal(body('嗯, 我在。'), '……嗯, 我在。')
+  assert.equal(body('嗯. hi'), '……嗯. hi')
+  assert.equal(body('哈! 你看'), '……哈! 你看')
+  assert.equal(body('hmm, fine'), 'hmm, fine')
 })
 test('cache key covers text and synthesis parameters', () => {
   const a = buildTtsRequest('你好', config).config.cacheKey
